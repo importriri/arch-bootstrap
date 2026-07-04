@@ -1,0 +1,11 @@
+# fake disks and images used by the test suite
+*.img
+fakedisk-*
+
+# key material — never commit secrets (LUKS test keyfiles etc.)
+*.key
+*.keyfile
+
+# editor / misc
+*.swp
+*~

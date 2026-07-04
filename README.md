@@ -1,5 +1,7 @@
 # arch-bootstrap
 
+![lint](https://github.com/importriri/arch-bootstrap/actions/workflows/test.yml/badge.svg)
+
 A minimal, test-driven Arch Linux installer written in plain bash.
 
 **Target stack (non-negotiable):** LUKS2 (argon2id) · Btrfs subvolumes ·
@@ -57,6 +59,9 @@ images, attaches a loop device, and walks the whole ladder: lint → gate
 (reject/accept) → dry-run (must fail honestly on a too-small disk, pass on
 a correct one) → real write → udev symlinks → GPT read-back. Teardown runs
 on every exit path. No real disk is ever touched.
+
+When the tooling itself breaks in interesting ways, the story gets a
+writeup in [`problems/`](problems/).
 
 ## Roadmap
 

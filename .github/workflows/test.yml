@@ -1,0 +1,22 @@
+name: lint
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck installer
+        run: shellcheck installer
+
+      - name: shellcheck test suite (follows the sourced installer)
+        run: shellcheck -x test-installer
+
+      - name: bash syntax check
+        run: |
+          bash -n installer
+          bash -n test-installer
