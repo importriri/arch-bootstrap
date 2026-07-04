@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-#Sid Ahmed Riri                                                                   04/07/2026
+# Sid Ahmed Riri                                                                   04/07/2026
 
 # test suite for installer — same architecture as installer
 # usage:  sudo ./test-installer     
