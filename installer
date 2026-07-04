@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+
+# Sid Ahmed Riri                                                 	02/07/2026
+
+# this script will install arch linux with luks2, btrfs, systemd-boot and mkinitcpio
+
+DRY_RUN="${DRY_RUN:-1}" #dry-run always on default (1)
+
+readonly ESP_LABEL="ARCH_ESP"
+readonly ROOT_LABEL="ARCH_ROOT"
+
+readonly ESP_PART="/dev/disk/by-partlabel/${ESP_LABEL}"
+readonly ROOT_PART="/dev/disk/by-partlabel/${ROOT_LABEL}"
+
+#==========================================================================================
+#checks for root privileges ===============================================================
+#==========================================================================================
+
+check_root() {
+	if (( EUID != 0 )); then
+		echo "Permission denied: root privileges required" >&2
+		return 1
+	fi
+	echo "[OK] Root privileges confirmed" >&2
+	return 0
+}
+
+#===========================================================================================
+#checks for uefi 64 bit ====================================================================
+#===========================================================================================
+
+check_uefi() {
+	#checks for uefi
+	if [[ ! -d /sys/firmware/efi ]]; then
+		echo "Not booted in UEFI mode (BIOS/CSM?)" >&2
+		return 1
+	fi
+
+	#checks for 64 bit
+	local bits
+	bits=$(cat /sys/firmware/efi/fw_platform_size 2>/dev/null || echo "?")
+
+	if [[ $bits != "64" ]]; then
+		echo "UEFI firmware is not 64-bit (fw_platform_size: $bits)" >&2
+		return 1
+	fi
+
+	echo "[OK] 64-bit UEFI confirmed" >&2
+	return 0
+}
+
+#===========================================================================================
+#checks for internet connectivity (DNS + ICMP) =============================================
+#===========================================================================================
+check_network() {
+	if ! ping -c 1 -W 3 archlinux.org > /dev/null 2>&1; then
+		echo "No internet connection (or DNS failure)" >&2
+		return 1
+	fi
+	echo "[OK] Internet connection confirmed" >&2
+	return 0
+}
+
+#===========================================================================================
+#interactive target disk selection==========================================================
+#===========================================================================================
+check_disk() {
+	#checking for disks
+	local -a disks
+	mapfile -t disks < <(lsblk -dnpo NAME,SIZE,TYPE \
+		| awk '$3 == "disk" && $1 !~ /zram/ {print $1, $2}')
+
+	#guard: zero disks
+	if (( ${#disks[@]} == 0 )); then
+		echo "NO usable disks detected" >&2
+		return 1
+	fi
+
+	#menu prints
+	local i
+	for i in "${!disks[@]}"; do
+		echo "$(( i + 1 ))) ${disks[i]}" >&2
+	done
+	echo "0) Abort installation" >&2
+
+	#menu loop
+	local choice selected
+	while true; do
+		#guard to avoid infinite loop of "Invalid choice"
+		if ! read -rp "Select target disk [0-${#disks[@]}]: " choice; then
+			echo >&2
+			echo "Input stream closed, aborting" >&2
+			return 1
+		fi
+
+		#only_integers
+		if [[ ! $choice =~ ^[0-9]+$ ]]; then
+			echo "Invalid choice" >&2
+			continue
+		fi
+
+		#base10
+		choice=$(( 10#$choice ))
+		if (( choice == 0 )); then
+			echo "Installation aborted by user" >&2
+			return 1
+		fi
+
+		#selecting the disk
+		if (( choice >= 1 && choice <= ${#disks[@]} )); then
+			selected="${disks[choice - 1]%% *}"
+			echo "Selected: $selected" >&2
+			echo "$selected"
+			return 0
+		fi
+
+		#number out of range
+		echo "Invalid choice" >&2
+	done
+}
+
+#============================================================================================
+# cleanup: the safety net ===================================================================
+# ===========================================================================================
+cleanup() {
+	#unmount filesystem
+	umount -R /mnt 2>/dev/null || true
+	#closing the disk
+	cryptsetup close cryptroot 2>/dev/null || true
+}
+
+# ===========================================================================================
+# confirm_wipe: the gate ====================================================================
+# ===========================================================================================
+confirm_wipe() {
+	local disk="$1"
+	#guard: rejects the disk where the iso is booted
+	local boot_src boot_disk
+	if boot_src=$(findmnt -no SOURCE /run/archiso/bootmnt 2>/dev/null); then
+		boot_disk="/dev/$(lsblk -no PKNAME "$boot_src" 2>/dev/null)"
+		if [[ $disk == "$boot_disk" ]]; then
+			echo "Refusing to wipe the live boot medium ($disk)" >&2
+			return 1
+		fi
+	fi
+
+	#showing what's gonna die
+	echo >&2
+	echo "!!! ALL DATA ON $disk WILL BE DESTROYED !!!" >&2
+	lsblk "$disk" >&2
+	echo >&2
+
+	#guard: confirm path from user
+	local confirm
+	if ! read -rp "Type the disk path ($disk) to confirm destruction: " confirm; then
+		echo >&2
+		echo "Input stream closed, aborting" >&2
+		return 1
+	fi
+
+	if [[ $confirm != "$disk" ]]; then
+		echo "Confirmation mismatch, aborting" >&2
+		return 1
+	fi
+	echo "[OK] Destruction of $disk confirmed" >&2
+	return 0
+}
+
+#============================================================================================
+# partition_disk: sgdisk ====================================================================
+#============================================================================================
+partition_disk() {
+	local disk="$1"
+
+	#single source of truth for the layout: both branches use the same array
+	local -a sgdisk_args=(
+		--zap-all
+		-n "1:0:+1G" -t "1:ef00" -c "1:${ESP_LABEL}"
+		-n "2:0:0"   -t "2:8309" -c "2:${ROOT_LABEL}"
+	)
+
+	#dry-run
+	if (( DRY_RUN )); then
+		echo "[DRY-RUN] sgdisk in pretend mode, nothing will be written" >&2
+		sgdisk --pretend "${sgdisk_args[@]}" -p "$disk" >&2 \
+			|| { echo "sgdisk (pretend) failed on $disk" >&2; return 1; }
+		echo "[DRY-RUN] no changes written to $disk" >&2
+		return 0
+	fi
+
+	#the real stuff: every critical command checked explicitly, because
+	#set -e is suspended inside functions called with || or inside if conditions
+	echo "Partitioning $disk ..." >&2
+	sgdisk "${sgdisk_args[@]}" "$disk" >&2 \
+		|| { echo "sgdisk failed on $disk" >&2; return 1; }
+
+	#synchronization: force kernel to reread the table, wait for udev symlinks
+	partprobe "$disk" || { echo "partprobe failed on $disk" >&2; return 1; }
+	udevadm settle || { echo "udevadm settle failed" >&2; return 1; }
+
+	#guard: the by-partlabel symlinks must exist before wipefs uses them
+	if [[ ! -e $ESP_PART || ! -e $ROOT_PART ]]; then
+		echo "Partition symlinks did not appear after settle" >&2
+		return 1
+	fi
+
+	#kill old filesystem signatures surviving inside the new partitions
+	wipefs -a "$ESP_PART" "$ROOT_PART" >&2 \
+		|| { echo "wipefs failed" >&2; return 1; }
+
+	echo "[OK] $disk partitioned (ESP=$ESP_PART, ROOT=$ROOT_PART)" >&2
+	return 0
+}
+
+#============================================================================================
+# main function =============================================================================
+#============================================================================================
+main() {
+	#non interactive guards
+	check_root || exit 1
+	check_uefi || exit 1
+	check_network || exit 1
+
+	#capturing selected disk
+	local disk # declaration and assignment separate
+	disk=$(check_disk) || exit 1  #so "local" can't mask disk failure
+
+	#check for empty string in disk
+	if [[ -z $disk ]]; then
+		echo "Internal error: empty disk selection" >&2
+		exit 1
+	fi
+
+	echo "Target disk: $disk" >&2
+
+	#destructive steps
+	confirm_wipe "$disk" || exit 1
+	partition_disk "$disk" || exit 1
+}
+
+#============================================================================================
+# launcher ==================================================================================
+# ===========================================================================================
+# Execute main only when script is launched not when sourced, so it's possible to use "source
+# installer" in a shell and test every single function in isolation, nice to have for tests in
+# VMs
+# ===========================================================================================
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+	#strict mode is enabled only here, so sourcing the script doesn't force -euo pipefail
+	#onto the interactive shell
+	set -euo pipefail
+	shopt -s inherit_errexit
+
+	trap cleanup EXIT
+
+	main "$@"
+fi
+#===========================================================================================

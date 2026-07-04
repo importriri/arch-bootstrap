@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+
+#Riri Sid Ahmed                                          04/07/2026
+
+# test suite for installer — same architecture as installer
+# usage:  sudo ./test-installer     
+# lint:   shellcheck -x test-installer
+
+#==========================================================================================
+# global state ==============================================================================
+#==========================================================================================
+
+#initialized empty before any function: the trap can fire at any moment and
+#teardown must be able to read these under set -u
+img_small=""
+img_big=""
+loopdev=""
+
+#==========================================================================================
+# helpers ===================================================================================
+#==========================================================================================
+
+fail() { echo "[FAIL] $*" >&2; exit 1; }
+pass() { echo "[PASS] $*" >&2; }
+info() { echo "[i] $*"    >&2; }
+
+#==========================================================================================
+# check_deps: every environment problem named at the door ==================================
+#==========================================================================================
+
+check_deps() {
+	#one clear line now beats a cryptic death mid-flight
+	local cmd
+	for cmd in sgdisk losetup partprobe udevadm wipefs lsblk findmnt; do
+		command -v "$cmd" > /dev/null || fail "missing command: $cmd"
+	done
+	pass "dependencies present"
+	return 0
+}
+
+#==========================================================================================
+# lint_installer: never source unverified code =============================================
+#==========================================================================================
+
+#lint comes BEFORE the import: source executes the file top-level,
+#a broken file would explode outside our control
+lint_installer() {
+	if command -v shellcheck > /dev/null; then
+		shellcheck -x ./installer || fail "shellcheck found problems"
+		pass "shellcheck"
+	fi
+	bash -n ./installer || fail "bash -n found syntax errors"
+	pass "bash -n"
+	return 0
+}
+
+#==========================================================================================
+# import_installer: the real functions, not copies =========================================
+#==========================================================================================
+
+import_installer() {
+	#DRY_RUN is ours: installer respects it thanks to ${DRY_RUN:-1}
+	#export silences SC2034, the use happens in the sourced file
+	export DRY_RUN=1
+
+	# shellcheck source=installer
+	source ./installer   #launcher guard defines the functions, main does not start
+	return 0
+}
+
+#==========================================================================================
+# teardown: runs on EVERY exit, must never fail =============================================
+#==========================================================================================
+
+#idempotent, || true everywhere, reverse order of creation
+teardown() {
+	if [[ -n $loopdev ]]; then
+		losetup -d "$loopdev" 2>/dev/null || true
+	fi
+	rm -f "$img_small" "$img_big" 2>/dev/null || true
+}
+
+#==========================================================================================
+# setup_fake_disks: load, verify, THEN use ==================================================
+#==========================================================================================
+
+setup_fake_disks() {
+	#no "|| true" on modprobe: if it fails i want to know, by name
+	#(already loaded = exit 0, so running it again does no damage)
+	modprobe loop || fail "cannot load the loop kernel module"
+	[[ -e /dev/loop-control ]] || fail "/dev/loop-control missing after modprobe"
+	pass "loop device support ready"
+
+	img_small=$(mktemp /tmp/fakedisk-small.XXXXXX)   #1G: too small on purpose
+	img_big=$(mktemp /tmp/fakedisk-big.XXXXXX)       #4G: the real target
+	truncate -s 1G "$img_small"
+	truncate -s 4G "$img_big"
+
+	loopdev=$(losetup -fP --show "$img_big")
+	info "fake disk: $loopdev (backed by $img_big)"
+
+	#precondition: never assert on dirty state
+	[[ ! -e $ESP_PART ]]  || fail "precondition: $ESP_PART already exists"
+	[[ ! -e $ROOT_PART ]] || fail "precondition: $ROOT_PART already exists"
+	return 0
+}
+
+#==========================================================================================
+# the tests =================================================================================
+#==========================================================================================
+
+test_gate_rejects() {
+	#if-form: expected failures live inside if, where set -e sleeps
+	if confirm_wipe "$loopdev" <<< "/dev/wrong" > /dev/null 2>&1; then
+		fail "confirm_wipe accepted a wrong disk path"
+	fi
+	pass "confirm_wipe rejects wrong input"
+	return 0
+}
+
+test_gate_accepts() {
+	#here-string = fake stdin, that's how interactive code gets tested
+	confirm_wipe "$loopdev" <<< "$loopdev" > /dev/null 2>&1 \
+		|| fail "confirm_wipe rejected the correct path"
+	pass "confirm_wipe accepts the exact path"
+	return 0
+}
+
+test_dryrun_honest() {
+	#the anti-lie test: errexit is suspended in here, the internal
+	#guards must do the job on their own
+	if partition_disk "$img_small" > /dev/null 2>&1; then
+		fail "partition_disk returned 0 on a too-small disk"
+	fi
+	pass "dry-run fails honestly when the layout does not fit"
+	return 0
+}
+
+test_dryrun_passes() {
+	partition_disk "$loopdev" > /dev/null 2>&1 || fail "dry-run failed on $loopdev"
+	pass "dry-run passes on the 4G loop device"
+	return 0
+}
+
+test_real_branch() {
+	#from here it writes for real (inside img_big, none of my disks)
+	#DRY_RUN is global and read at runtime: the flip changes branch
+	DRY_RUN=0
+	partition_disk "$loopdev" || fail "partition_disk (real) failed"
+
+	[[ -e $ESP_PART ]]  || fail "symlink $ESP_PART was not created"
+	[[ -e $ROOT_PART ]] || fail "symlink $ROOT_PART was not created"
+	pass "by-partlabel symlinks exist"
+
+	[[ $(readlink -f "$ESP_PART")  == "${loopdev}p1" ]] || fail "ESP symlink points elsewhere"
+	[[ $(readlink -f "$ROOT_PART") == "${loopdev}p2" ]] || fail "ROOT symlink points elsewhere"
+	pass "symlinks resolve to ${loopdev}p1 / p2"
+
+	lsblk -no PARTLABEL "$loopdev" | grep -qx "$ESP_LABEL"  || fail "$ESP_LABEL not in GPT"
+	lsblk -no PARTLABEL "$loopdev" | grep -qx "$ROOT_LABEL" || fail "$ROOT_LABEL not in GPT"
+	pass "GPT contains both partlabels"
+	return 0
+}
+
+#==========================================================================================
+# main: reads like an index =================================================================
+#==========================================================================================
+
+main() {
+	check_deps
+	lint_installer
+	import_installer
+
+	check_root || exit 1
+
+	setup_fake_disks
+
+	test_gate_rejects
+	test_gate_accepts
+	test_dryrun_honest
+	test_dryrun_passes
+	test_real_branch
+
+	#final eyeball check: the table read back from the device
+	sgdisk -p "$loopdev" >&2
+
+	echo >&2
+	echo "ALL TESTS PASSED" >&2
+}
+
+#==========================================================================================
+# launcher ==================================================================================
+#==========================================================================================
+# same pattern as installer: strict mode and trap only on direct execution,
+# so "source test-installer" lets me call single tests by hand
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+	set -euo pipefail
+	shopt -s inherit_errexit
+
+	trap teardown EXIT
+
+	main "$@"
+fi
+#==========================================================================================
