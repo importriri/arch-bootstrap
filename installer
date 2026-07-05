@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 
-# Sid Ahmed Riri                                                          02/07/2026
-
 # this script will install arch linux with luks2, btrfs, systemd-boot and mkinitcpio
 
 DRY_RUN="${DRY_RUN:-1}" #dry-run always on default (1)
