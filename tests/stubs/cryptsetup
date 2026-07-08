@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/_stub_lib.sh"
+_log "$@"
+case "$1" in
+  --help)   echo "supported PBKDF: pbkdf2, argon2i, argon2id" ;;   # grep -w argon2id must hit
+  isLuks)   exit "${STUB_ISLUKS:-1}" ;;                            # default: not a luks device
+  luksUUID) echo "${STUB_LUKS_UUID:-11111111-2222-3333-4444-555555555555}" ;;
+  luksFormat|open|close) : ;;                                      # succeed, header not really touched
+  *) : ;;
+esac
+exit 0

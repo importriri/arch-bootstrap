@@ -10,6 +10,16 @@ readonly ROOT_LABEL="ARCH_ROOT"
 readonly ESP_PART="/dev/disk/by-partlabel/${ESP_LABEL}"
 readonly ROOT_PART="/dev/disk/by-partlabel/${ROOT_LABEL}"
 
+# ---- LUKS2 -------------------------------------------------------------------
+# argon2id + aes-xts-plain64 + 512-bit key. one place, so the dry-run message
+# and the real command can never drift apart.
+readonly LUKS_NAME="cryptroot"
+readonly LUKS_MAPPER="/dev/mapper/${LUKS_NAME}"
+readonly LUKS_CIPHER="aes-xts-plain64"
+readonly LUKS_KEY_SIZE="512"
+readonly LUKS_HASH="sha512"
+readonly LUKS_PBKDF="argon2id"
+
 #==========================================================================================
 #checks for root privileges ===============================================================
 #==========================================================================================
@@ -124,7 +134,7 @@ cleanup() {
 	#unmount filesystem
 	umount -R /mnt 2>/dev/null || true
 	#closing the disk
-	cryptsetup close cryptroot 2>/dev/null || true
+	cryptsetup close "$LUKS_NAME" 2>/dev/null || true
 }
 
 # ===========================================================================================
@@ -211,6 +221,123 @@ partition_disk() {
 }
 
 #============================================================================================
+# read_passphrase: the secret only ever travels on stdout ===================================
+#============================================================================================
+# reads a passphrase twice, confirms it matches, prints it (no trailing newline)
+# on stdout. every prompt and every error goes to stderr, so a caller can do
+#   pass=$(read_passphrase) || return 1
+# and get exactly the secret, nothing else.
+read_passphrase() {
+	local pass1 pass2
+
+	#-s: no echo. the prompt has to reach the terminal even with -s, hence >&2
+	if ! read -rsp "LUKS passphrase: " pass1; then
+		echo >&2; echo "Input stream closed" >&2; return 1
+	fi
+	echo >&2
+
+	if [[ -z $pass1 ]]; then
+		echo "Empty passphrase rejected" >&2
+		return 1
+	fi
+
+	if ! read -rsp "Repeat passphrase: " pass2; then
+		echo >&2; echo "Input stream closed" >&2; return 1
+	fi
+	echo >&2
+
+	if [[ $pass1 != "$pass2" ]]; then
+		echo "Passphrases do not match" >&2
+		return 1
+	fi
+
+	#printf '%s' — deliberately NO trailing newline. cryptsetup reads a key file
+	#byte for byte; a newline baked in here would NOT match the interactive prompt
+	#sd-encrypt shows at boot, and would lock the user out of their own disk.
+	printf '%s' "$pass1"
+	return 0
+}
+
+#============================================================================================
+# encrypt_root: LUKS2 (argon2id) ============================================================
+#============================================================================================
+encrypt_root() {
+	local part="$1"
+
+	#capability preconditions, in BOTH branches -----------------------------------
+	#cryptsetup must be present AND actually speak argon2id: a dry-run that passes
+	#on a box which can't argon2id would be a lie
+	command -v cryptsetup > /dev/null \
+		|| { echo "cryptsetup not found" >&2; return 1; }
+	if ! cryptsetup --help 2>&1 | grep -qw argon2id; then
+		echo "this cryptsetup build does not list argon2id as a PBKDF" >&2
+		return 1
+	fi
+
+	#sequencing precondition: the target must exist only for a REAL format. in
+	#dry-run it legitimately may not exist yet (partition_disk wrote nothing), so
+	#the whole pipeline can be rehearsed end to end on a blank machine.
+	if (( ! DRY_RUN )) && [[ ! -e $part ]]; then
+		echo "Root partition not found: $part" >&2
+		return 1
+	fi
+
+	#reformatting an existing container destroys its header and every keyslot;
+	#the user must be told before they type a passphrase
+	if [[ -e $part ]] && cryptsetup isLuks "$part" 2>/dev/null; then
+		echo "WARNING: $part already holds a LUKS header" >&2
+		echo "         luksFormat will destroy it and all of its keyslots" >&2
+	fi
+
+	#the exact command both branches talk about, defined once
+	local -a fmt_args=(
+		luksFormat
+		--type luks2
+		--cipher   "$LUKS_CIPHER"
+		--key-size "$LUKS_KEY_SIZE"
+		--hash     "$LUKS_HASH"
+		--pbkdf    "$LUKS_PBKDF"
+		--batch-mode
+		--key-file -
+	)
+
+	#acquire + confirm the passphrase in the dry-run too. this is deliberate: the
+	#match logic is the one thing a dry-run CAN prove before a byte is written, and
+	#getting it wrong is exactly what wastes a real, slow luksFormat.
+	local passphrase
+	passphrase=$(read_passphrase) || return 1
+
+	#dry-run: describe, touch nothing ---------------------------------------------
+	if (( DRY_RUN )); then
+		echo "[DRY-RUN] would run:" >&2
+		echo "          cryptsetup ${fmt_args[*]} $part" >&2
+		[[ -e $part ]] \
+			|| echo "[DRY-RUN] note: $part does not exist yet (partition_disk would create it)" >&2
+		echo "[DRY-RUN] passphrase acquired and confirmed (${#passphrase} chars), not used" >&2
+		echo "[DRY-RUN] no header written to $part" >&2
+		return 0
+	fi
+
+	#real: set -e is suspended here, so each critical command guards itself --------
+	echo "Formatting $part as LUKS2 ($LUKS_PBKDF) ..." >&2
+	printf '%s' "$passphrase" | cryptsetup "${fmt_args[@]}" "$part" \
+		|| { echo "luksFormat failed on $part" >&2; return 1; }
+
+	echo "Opening $part as $LUKS_NAME ..." >&2
+	printf '%s' "$passphrase" | cryptsetup open --key-file - "$part" "$LUKS_NAME" \
+		|| { echo "luksOpen failed on $part" >&2; return 1; }
+
+	#the mapper node is the contract handed to the btrfs phase
+	if [[ ! -e $LUKS_MAPPER ]]; then
+		echo "$LUKS_MAPPER did not appear after open" >&2
+		return 1
+	fi
+
+	echo "[OK] $part encrypted and opened at $LUKS_MAPPER" >&2
+	return 0
+}
+
+#============================================================================================
 # main function =============================================================================
 #============================================================================================
 main() {
@@ -232,8 +359,13 @@ main() {
 	echo "Target disk: $disk" >&2
 
 	#destructive steps
-	confirm_wipe "$disk" || exit 1
+	confirm_wipe "$disk"   || exit 1
 	partition_disk "$disk" || exit 1
+
+	#encryption
+	encrypt_root "$ROOT_PART" || exit 1
+
+	echo "[OK] root encrypted — filesystems are the next phase" >&2
 }
 
 #============================================================================================

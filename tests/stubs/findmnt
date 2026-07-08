@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/_stub_lib.sh"
+_log "$@"
+exit 1

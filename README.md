@@ -8,10 +8,17 @@ A minimal, test-driven Arch Linux installer written in plain bash.
 systemd-boot · `sd-encrypt` mkinitcpio hooks · Secure Boot via sbctl with
 custom keys · `linux-hardened` · zram (no swap partition).
 
+**The host it produces:** TTY only — no GPU driver, no Bluetooth, no desktop.
+Its first job is to fetch the Ansible stage and become the lab, nothing else.
+Networking is `iwd` (wifi, `iwctl`) plus `systemd-networkd` (wired DHCP) and
+`systemd-resolved` (DNS), all enabled at install time; `git` and `ansible`
+ship in the base set, so the machine is stage-2-ready the moment DNS resolves.
+
 > ⚠️ **Status: work in progress — pre-alpha.**
-> The partitioning phase is complete and tested; encryption and everything
-> after it are not written yet. Do **not** run this against real hardware.
-> Development happens against loop devices and QEMU/KVM snapshots only.
+> Partitioning and LUKS2 encryption are complete; the encryption path is
+> unit-tested and its header verified for real (`luksDump` on a sparse file).
+> Everything after it is not written yet. Do **not** run this against real
+> hardware. Development happens against loop devices and QEMU/KVM snapshots only.
 
 ## Design principles
 
@@ -33,14 +40,14 @@ custom keys · `linux-hardened` · zram (no swap partition).
 | # | Size | Type | Partlabel  | Purpose                          |
 |---|------|------|------------|----------------------------------|
 | 1 | 1 GiB | ef00 | ARCH_ESP   | EFI System Partition (kernel + initramfs live here with systemd-boot) |
-| 2 | rest  | 8309 | ARCH_ROOT  | LUKS2 container → Btrfs (next phase) |
+| 2 | rest  | 8309 | ARCH_ROOT  | LUKS2 container (argon2id) → Btrfs (next phase) |
 
 No swap partition: zram only (configured in a later phase).
 
 ## Usage
 
 ```bash
-# dry run (default): shows the resulting table, writes nothing
+# dry run (default): shows what every phase *would* do, writes nothing
 sudo ./installer
 
 # real run — only inside a VM for now
@@ -50,15 +57,20 @@ sudo DRY_RUN=0 ./installer
 ## Testing
 
 ```bash
-sudo ./test-installer      # needs: gptfdisk, parted, util-linux
-shellcheck -x test-installer
+shellcheck -x installer test-installer tests/*   # lint, everywhere
+bats tests/unit.bats                              # unit: real functions, stubbed tools
+sudo bash tests/luks-header-verify.sh             # REAL LUKS2 header on a sparse file
+sudo ./test-installer                             # loop devices: the partitioning ladder
 ```
 
-The suite checks its own dependencies first, builds disposable sparse
-images, attaches a loop device, and walks the whole ladder: lint → gate
-(reject/accept) → dry-run (must fail honestly on a too-small disk, pass on
-a correct one) → real write → udev symlinks → GPT read-back. Teardown runs
-on every exit path. No real disk is ever touched.
+`unit.bats` sources the installer and runs the real functions with the
+destructive binaries stubbed out; tests for phases that don't exist yet skip
+themselves, so one suite follows the project through every milestone.
+`luks-header-verify.sh` mocks nothing: it formats a sparse file and reads the
+header back (`luksDump` — argon2id, aes-xts, 512-bit), then proves the
+passphrase newline trap on a real keyslot. The loop-device
+suite is unchanged: dependencies first, disposable images, teardown on every
+exit path. No real disk is ever touched.
 
 When the tooling itself breaks in interesting ways, the story gets a
 writeup in [`problems/`](problems/).
@@ -70,12 +82,15 @@ writeup in [`problems/`](problems/).
 - [x] Destruction gate (path re-typing, live-media guard)
 - [x] GPT partitioning (dry-run by default, partlabels, kernel/udev sync)
 - [x] Loop-device test suite
-- [ ] LUKS2 encryption (argon2id)
+- [x] LUKS2 encryption (argon2id)
 - [ ] Btrfs subvolume layout (`@`, `@home`, `@snapshots`, `@var_log`, …)
-- [ ] Base install (pacstrap, `linux-hardened`)
+- [ ] Base install (pacstrap, `linux-hardened`, TTY-only package set)
 - [ ] systemd-boot + `sd-encrypt` initramfs
 - [ ] Secure Boot (sbctl, custom keys)
 - [ ] zram configuration
+- [ ] Network for a headless host: iwd + systemd-networkd + systemd-resolved
+- [ ] Optional dual disk: LUKS2 container for `@vm`, keyfile-unlocked via crypttab
+- [ ] Layered test suite (unit · real LUKS header · VM pipeline) wired into CI
 
 ## Context
 
