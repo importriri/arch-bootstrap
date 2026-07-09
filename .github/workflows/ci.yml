@@ -1,5 +1,4 @@
-name: lint
-
+name: ci
 on:
   push:
   pull_request:
@@ -9,6 +8,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: install bats
+        run: sudo apt-get update && sudo apt-get install -y bats
 
       - name: shellcheck installer
         run: shellcheck installer
@@ -20,3 +22,6 @@ jobs:
         run: |
           bash -n installer
           bash -n test-installer
+
+      - name: unit tests (no root)
+        run: bats tests/unit.bats
