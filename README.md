@@ -1,6 +1,6 @@
 # arch-bootstrap
 
-![lint](https://github.com/importriri/arch-bootstrap/actions/workflows/test.yml/badge.svg)
+![lint](https://github.com/importriri/arch-bootstrap/actions/workflows/ci.yml/badge.svg)
 
 A minimal, test-driven Arch Linux installer written in plain bash.
 
