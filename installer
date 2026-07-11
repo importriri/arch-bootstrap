@@ -20,6 +20,29 @@ readonly LUKS_KEY_SIZE="512"
 readonly LUKS_HASH="sha512"
 readonly LUKS_PBKDF="argon2id"
 
+# ---- Btrfs -------------------------------------------------------------------
+# top-level (subvolid=5) is mounted here only long enough to create the subvols,
+# then unmounted. the real tree is built under MOUNT_ROOT from the named subvols.
+readonly MOUNT_ROOT="/mnt"
+readonly BTRFS_TOP="/mnt/.btrfs-top"
+readonly BTRFS_OPTS="compress=zstd:1,noatime"
+
+# ordered, pipe-delimited layout: subvol|mountpoint|extra
+#   the order matters — parents before children (@ before /home, etc.)
+#   extra="nocow" marks the subvol that must get chattr +C while still empty
+#   (@vm: COW + VM images = fragmentation death; no compression either)
+#   NOTE: no @var_lib / no subvol for /var/lib/pacman — it rides inside @ on
+#   purpose, so a rollback of @ and the pacman db never desync.
+readonly -a SUBVOL_LAYOUT=(
+	"@|/|"
+	"@home|/home|"
+	"@snapshots|/.snapshots|"
+	"@var_log|/var/log|"
+	"@var_cache|/var/cache|"
+	"@var_tmp|/var/tmp|"
+	"@vm|/var/lib/libvirt/images|nocow"
+)
+
 #==========================================================================================
 #checks for root privileges ===============================================================
 #==========================================================================================
@@ -132,7 +155,7 @@ check_disk() {
 # ===========================================================================================
 cleanup() {
 	#unmount filesystem
-	umount -R /mnt 2>/dev/null || true
+	umount -R "$MOUNT_ROOT" 2>/dev/null || true
 	#closing the disk
 	cryptsetup close "$LUKS_NAME" 2>/dev/null || true
 }
@@ -338,6 +361,178 @@ encrypt_root() {
 }
 
 #============================================================================================
+# make_filesystems: mkfs on ESP + the opened LUKS mapper ====================================
+#============================================================================================
+make_filesystems() {
+	#capability preconditions, in both branches
+	command -v mkfs.fat   > /dev/null || { echo "mkfs.fat not found" >&2; return 1; }
+	command -v mkfs.btrfs > /dev/null || { echo "mkfs.btrfs not found" >&2; return 1; }
+
+	if (( DRY_RUN )); then
+		echo "[DRY-RUN] would run: mkfs.fat -F32 -n ESP $ESP_PART" >&2
+		echo "[DRY-RUN] would run: mkfs.btrfs -L arch $LUKS_MAPPER" >&2
+		[[ -e $ESP_PART ]] \
+			|| echo "[DRY-RUN] note: $ESP_PART does not exist yet (partition_disk would create it)" >&2
+		echo "[DRY-RUN] no filesystems written" >&2
+		return 0
+	fi
+
+	#real: sequencing preconditions — the partition and the opened mapper
+	if [[ ! -e $ESP_PART ]]; then
+		echo "ESP partition not found: $ESP_PART" >&2
+		return 1
+	fi
+	if [[ ! -e $LUKS_MAPPER ]]; then
+		echo "$LUKS_MAPPER missing — was the root unlocked?" >&2
+		return 1
+	fi
+
+	echo "Formatting ESP ($ESP_PART) ..." >&2
+	mkfs.fat -F32 -n ESP "$ESP_PART" > /dev/null \
+		|| { echo "mkfs.fat failed on $ESP_PART" >&2; return 1; }
+
+	echo "Formatting Btrfs on $LUKS_MAPPER ..." >&2
+	mkfs.btrfs -L arch "$LUKS_MAPPER" > /dev/null \
+		|| { echo "mkfs.btrfs failed on $LUKS_MAPPER" >&2; return 1; }
+
+	echo "[OK] filesystems created (ESP=vfat, root=btrfs)" >&2
+	return 0
+}
+
+#============================================================================================
+# validate_layout: parse the records once, refuse a malformed table =========================
+#============================================================================================
+# a pure check with no side effects: every phase that walks SUBVOL_LAYOUT calls
+# this first, so a typo in the array dies here with a clear line, not halfway
+# through mounting.
+validate_layout() {
+	local record subvol mount extra
+	local -A seen_mount=()
+	for record in "${SUBVOL_LAYOUT[@]}"; do
+		IFS='|' read -r subvol mount extra <<< "$record"
+
+		if [[ -z $subvol || -z $mount ]]; then
+			echo "Malformed layout record (empty field): '$record'" >&2
+			return 1
+		fi
+		if [[ $subvol != @* ]]; then
+			echo "Subvolume name must start with '@': '$subvol'" >&2
+			return 1
+		fi
+		if [[ $mount != /* ]]; then
+			echo "Mountpoint must be absolute: '$mount'" >&2
+			return 1
+		fi
+		if [[ -n ${seen_mount[$mount]:-} ]]; then
+			echo "Duplicate mountpoint in layout: '$mount'" >&2
+			return 1
+		fi
+		seen_mount[$mount]=1
+
+		if [[ -n $extra && $extra != "nocow" ]]; then
+			echo "Unknown layout flag '$extra' on '$subvol'" >&2
+			return 1
+		fi
+	done
+	return 0
+}
+
+#============================================================================================
+# create_subvolumes: mount subvolid=5, create every @, unmount ==============================
+#============================================================================================
+create_subvolumes() {
+	validate_layout || return 1
+
+	if (( DRY_RUN )); then
+		echo "[DRY-RUN] would mount $LUKS_MAPPER (subvolid=5) at $BTRFS_TOP" >&2
+		local record subvol rest
+		for record in "${SUBVOL_LAYOUT[@]}"; do
+			IFS='|' read -r subvol rest <<< "$record"
+			echo "[DRY-RUN]   btrfs subvolume create $BTRFS_TOP/$subvol" >&2
+		done
+		echo "[DRY-RUN] would unmount $BTRFS_TOP" >&2
+		return 0
+	fi
+
+	if [[ ! -e $LUKS_MAPPER ]]; then
+		echo "$LUKS_MAPPER missing — cannot create subvolumes" >&2
+		return 1
+	fi
+
+	mkdir -p "$BTRFS_TOP" || { echo "mkdir $BTRFS_TOP failed" >&2; return 1; }
+	mount -o subvolid=5 "$LUKS_MAPPER" "$BTRFS_TOP" \
+		|| { echo "mount of btrfs top-level failed" >&2; return 1; }
+
+	local record subvol rest
+	for record in "${SUBVOL_LAYOUT[@]}"; do
+		IFS='|' read -r subvol rest <<< "$record"
+		btrfs subvolume create "$BTRFS_TOP/$subvol" > /dev/null \
+			|| { echo "btrfs subvolume create $subvol failed" >&2
+			     umount "$BTRFS_TOP" 2>/dev/null || true
+			     return 1; }
+	done
+
+	umount "$BTRFS_TOP" || { echo "umount $BTRFS_TOP failed" >&2; return 1; }
+	rmdir "$BTRFS_TOP" 2>/dev/null || true
+	echo "[OK] subvolumes created" >&2
+	return 0
+}
+
+#============================================================================================
+# mount_layout: mount every subvol at its home, +C on @vm, ESP on /boot ======================
+#============================================================================================
+mount_layout() {
+	validate_layout || return 1
+
+	if (( DRY_RUN )); then
+		local record subvol mount extra
+		for record in "${SUBVOL_LAYOUT[@]}"; do
+			IFS='|' read -r subvol mount extra <<< "$record"
+			echo "[DRY-RUN] mount -o $BTRFS_OPTS,subvol=$subvol $LUKS_MAPPER $MOUNT_ROOT$mount" >&2
+			[[ $extra == "nocow" ]] && echo "[DRY-RUN]   chattr +C $MOUNT_ROOT$mount (while empty)" >&2
+		done
+		echo "[DRY-RUN] mount $ESP_PART $MOUNT_ROOT/boot" >&2
+		echo "[DRY-RUN] nothing mounted" >&2
+		return 0
+	fi
+
+	if [[ ! -e $LUKS_MAPPER ]]; then
+		echo "$LUKS_MAPPER missing — cannot mount layout" >&2
+		return 1
+	fi
+
+	local record subvol mount extra target
+	for record in "${SUBVOL_LAYOUT[@]}"; do
+		IFS='|' read -r subvol mount extra <<< "$record"
+		target="$MOUNT_ROOT$mount"
+
+		mkdir -p "$target" || { echo "mkdir $target failed" >&2; return 1; }
+
+		#@vm is nodatacow: no compression, and mounted with nodatacow so the
+		#images inside inherit it. compression + COW would shred VM disk perf.
+		if [[ $extra == "nocow" ]]; then
+			mount -o "noatime,nodatacow,subvol=$subvol" "$LUKS_MAPPER" "$target" \
+				|| { echo "mount of $subvol failed" >&2; return 1; }
+			#belt and braces: set +C on the (still empty) dir explicitly, so any
+			#file created here is nodatacow even if the mount option ever changes
+			chattr +C "$target" 2>/dev/null || true
+		else
+			mount -o "$BTRFS_OPTS,subvol=$subvol" "$LUKS_MAPPER" "$target" \
+				|| { echo "mount of $subvol failed" >&2; return 1; }
+		fi
+	done
+
+	#the ESP lives at /boot: systemd-boot can't read btrfs, so kernel + initramfs
+	#have to sit on the FAT ESP directly (matches the hypervisor-lab boot entries)
+	mkdir -p "$MOUNT_ROOT/boot" || { echo "mkdir /boot failed" >&2; return 1; }
+	mount "$ESP_PART" "$MOUNT_ROOT/boot" \
+		|| { echo "mount of ESP at /boot failed" >&2; return 1; }
+
+	echo "[OK] layout mounted under $MOUNT_ROOT" >&2
+	return 0
+}
+
+#============================================================================================
 # main function =============================================================================
 #============================================================================================
 main() {
@@ -365,7 +560,12 @@ main() {
 	#encryption
 	encrypt_root "$ROOT_PART" || exit 1
 
-	echo "[OK] root encrypted — filesystems are the next phase" >&2
+	#filesystems + layout
+	make_filesystems  || exit 1
+	create_subvolumes || exit 1
+	mount_layout      || exit 1
+
+	echo "[OK] disk encrypted and mounted — base install is the next phase" >&2
 }
 
 #============================================================================================

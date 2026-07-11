@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# Full real pipeline test (M1+M2) on a loop device — FOR A THROWAWAY VM.
+# Runs the installer's REAL branches: partition_disk -> encrypt_root ->
+# make_filesystems -> create_subvolumes -> mount_layout, then verifies:
+#   - LUKS2 header is argon2id / aes-xts-plain64 / 512-bit (luksDump)
+#   - all 7 subvolumes exist
+#   - / mounted with compress=zstd:1, @vm mounted nodatacow with +C
+#   - ESP mounted vfat at /boot
+#
+# usage (from the repo root, in a VM):   sudo VM_TEST=1 ./tests/vm-pipeline-test
+#
+# It refuses to run without VM_TEST=1, without root, without device-mapper,
+# or if /mnt is busy — so on a laptop or in a container it degrades to a SKIP.
+set -uo pipefail
+
+pass() { echo "[PASS] $*"; }
+fail() { echo "[FAIL] $*"; exit 1; }
+skip() { echo "[SKIP] $*"; exit 0; }
+
+# ---- gates --------------------------------------------------------------------
+[[ ${VM_TEST:-0} == 1 ]] || skip "set VM_TEST=1 to acknowledge this runs REAL commands (VM only)"
+(( EUID == 0 ))          || skip "needs root"
+for tool in losetup sgdisk cryptsetup mkfs.fat mkfs.btrfs btrfs findmnt lsattr; do
+	command -v "$tool" > /dev/null || skip "$tool not available"
+done
+#device-mapper is the hard requirement a container can't fake
+if [[ ! -e /dev/mapper/control ]]; then
+	modprobe dm_crypt 2>/dev/null || true
+fi
+[[ -e /dev/mapper/control ]] || skip "device-mapper not available (container?)"
+#by-partlabel symlinks are udev's job: without udevd the pipeline can't resolve parts
+[[ -S /run/udev/control ]] || skip "udevd not running (container?) — by-partlabel symlinks won't appear"
+command -v partprobe > /dev/null || skip "partprobe not available"
+#never build a test tree over something already mounted at /mnt
+if mountpoint -q /mnt; then
+	skip "/mnt is already a mountpoint — refusing"
+fi
+
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+export DRY_RUN=0
+# shellcheck disable=SC1090,SC1091
+source "$HERE/installer"
+
+# ---- fixture + guaranteed teardown ---------------------------------------------
+IMG=$(mktemp /tmp/vm-pipeline.XXXXXX)
+LOOP=""
+teardown() {
+	umount -R "$MOUNT_ROOT" 2>/dev/null || true
+	cryptsetup close "$LUKS_NAME" 2>/dev/null || true
+	if [[ -n $LOOP ]]; then losetup -d "$LOOP" 2>/dev/null || true; fi
+	rm -f "$IMG"
+}
+trap teardown EXIT
+
+truncate -s 4G "$IMG" || fail "could not create sparse image"
+LOOP=$(losetup -fP --show "$IMG") || fail "losetup failed (loop module?)"
+pass "fixture ready: $LOOP (sparse 4G)"
+
+# ---- phase 1: partition ---------------------------------------------------------
+partition_disk "$LOOP" || fail "partition_disk (real) failed"
+[[ -e $ESP_PART && -e $ROOT_PART ]] || fail "by-partlabel symlinks missing after partition"
+pass "partition_disk: GPT written, $ESP_LABEL + $ROOT_LABEL resolvable"
+
+# ---- phase 2: LUKS2 --------------------------------------------------------------
+printf 'vmtestpass\nvmtestpass\n' | encrypt_root "$ROOT_PART" \
+	|| fail "encrypt_root (real) failed"
+[[ -e $LUKS_MAPPER ]] || fail "$LUKS_MAPPER missing after open"
+
+dump=$(cryptsetup luksDump "$ROOT_PART")
+grep -q  "Version:.*2"            <<< "$dump" || fail "not LUKS2"
+grep -qi "PBKDF:.*argon2id"       <<< "$dump" || fail "PBKDF is not argon2id"
+grep -qi "cipher:.*$LUKS_CIPHER"  <<< "$dump" || fail "cipher mismatch"
+grep -qi "$LUKS_KEY_SIZE bits"    <<< "$dump" || fail "key size mismatch"
+pass "encrypt_root: LUKS2/argon2id/$LUKS_CIPHER/$LUKS_KEY_SIZE-bit confirmed on-disk"
+
+# ---- phase 3: filesystems ---------------------------------------------------------
+make_filesystems || fail "make_filesystems (real) failed"
+[[ $(blkid -o value -s TYPE "$ESP_PART") == "vfat" ]]      || fail "ESP is not vfat"
+[[ $(blkid -o value -s TYPE "$LUKS_MAPPER") == "btrfs" ]]  || fail "mapper is not btrfs"
+pass "make_filesystems: vfat ESP + btrfs root"
+
+# ---- phase 4: subvolumes + layout --------------------------------------------------
+create_subvolumes || fail "create_subvolumes (real) failed"
+mount_layout      || fail "mount_layout (real) failed"
+
+count=$(btrfs subvolume list "$MOUNT_ROOT" | wc -l)
+(( count == ${#SUBVOL_LAYOUT[@]} )) || fail "expected ${#SUBVOL_LAYOUT[@]} subvolumes, found $count"
+pass "create_subvolumes: all $count subvolumes present"
+
+findmnt -no OPTIONS "$MOUNT_ROOT" | grep -q "compress=zstd:1" \
+	|| fail "/ (@) not mounted with compress=zstd:1"
+findmnt -no OPTIONS "$MOUNT_ROOT" | grep -q "noatime" \
+	|| fail "/ (@) not mounted noatime"
+
+vm_target="$MOUNT_ROOT/var/lib/libvirt/images"
+findmnt -no OPTIONS "$vm_target" | grep -q "nodatacow" \
+	|| fail "@vm not mounted nodatacow"
+lsattr -d "$vm_target" | awk '{print $1}' | grep -q "C" \
+	|| fail "@vm mountpoint lacks the +C attribute"
+findmnt -no OPTIONS "$vm_target" | grep -q "compress" \
+	&& fail "@vm must NOT be compressed"
+
+[[ $(findmnt -no FSTYPE "$MOUNT_ROOT/boot") == "vfat" ]] \
+	|| fail "ESP not mounted at /boot as vfat"
+pass "mount_layout: zstd:1+noatime on @, nodatacow+C (no compress) on @vm, ESP at /boot"
+
+echo
+echo "ALL VM PIPELINE TESTS PASSED (teardown runs automatically)"

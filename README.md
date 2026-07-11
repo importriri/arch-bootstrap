@@ -15,10 +15,11 @@ Networking is `iwd` (wifi, `iwctl`) plus `systemd-networkd` (wired DHCP) and
 ship in the base set, so the machine is stage-2-ready the moment DNS resolves.
 
 > ⚠️ **Status: work in progress — pre-alpha.**
-> Partitioning and LUKS2 encryption are complete; the encryption path is
-> unit-tested and its header verified for real (`luksDump` on a sparse file).
-> Everything after it is not written yet. Do **not** run this against real
-> hardware. Development happens against loop devices and QEMU/KVM snapshots only.
+> Partitioning, LUKS2 and the Btrfs subvolume layout are complete; a VM
+> pipeline test runs the real write path end to end on a loop device.
+> Base install and everything after are not written yet. Do **not** run this
+> against real hardware. Development happens against loop devices and
+> QEMU/KVM snapshots only.
 
 ## Design principles
 
@@ -40,9 +41,21 @@ ship in the base set, so the machine is stage-2-ready the moment DNS resolves.
 | # | Size | Type | Partlabel  | Purpose                          |
 |---|------|------|------------|----------------------------------|
 | 1 | 1 GiB | ef00 | ARCH_ESP   | EFI System Partition (kernel + initramfs live here with systemd-boot) |
-| 2 | rest  | 8309 | ARCH_ROOT  | LUKS2 container (argon2id) → Btrfs (next phase) |
+| 2 | rest  | 8309 | ARCH_ROOT  | LUKS2 container (argon2id) → Btrfs subvolumes |
 
 No swap partition: zram only (configured in a later phase).
+
+Inside the container, all mounted `compress=zstd:1,noatime` — except `@vm`:
+
+| Subvolume | Mounted at | Notes |
+|-----------|------------|-------|
+| `@` | `/` | pacman's db stays in here on purpose: a rollback of `@` can never desync it |
+| `@home` | `/home` | |
+| `@snapshots` | `/.snapshots` | |
+| `@var_log` | `/var/log` | survives a root rollback |
+| `@var_cache` | `/var/cache` | |
+| `@var_tmp` | `/var/tmp` | |
+| `@vm` | `/var/lib/libvirt/images` | `nodatacow` + `chattr +C`, no compression — COW and VM images don't mix |
 
 ## Usage
 
@@ -60,6 +73,7 @@ sudo DRY_RUN=0 ./installer
 shellcheck -x installer test-installer tests/*   # lint, everywhere
 bats tests/unit.bats                              # unit: real functions, stubbed tools
 sudo bash tests/luks-header-verify.sh             # REAL LUKS2 header on a sparse file
+sudo VM_TEST=1 ./tests/vm-pipeline-test           # VM only: partition → LUKS → Btrfs → mount, for real
 sudo ./test-installer                             # loop devices: the partitioning ladder
 ```
 
@@ -68,7 +82,10 @@ destructive binaries stubbed out; tests for phases that don't exist yet skip
 themselves, so one suite follows the project through every milestone.
 `luks-header-verify.sh` mocks nothing: it formats a sparse file and reads the
 header back (`luksDump` — argon2id, aes-xts, 512-bit), then proves the
-passphrase newline trap on a real keyslot. The loop-device
+passphrase newline trap on a real keyslot. The pipeline test runs the real
+write path end to end on a loop device and asserts what matters: seven
+subvolumes, `compress=zstd:1` on `@`, `nodatacow`+`+C` on `@vm`, the ESP on
+`/boot` — and outside a VM it skips itself and says why. The loop-device
 suite is unchanged: dependencies first, disposable images, teardown on every
 exit path. No real disk is ever touched.
 
@@ -83,7 +100,7 @@ writeup in [`problems/`](problems/).
 - [x] GPT partitioning (dry-run by default, partlabels, kernel/udev sync)
 - [x] Loop-device test suite
 - [x] LUKS2 encryption (argon2id)
-- [ ] Btrfs subvolume layout (`@`, `@home`, `@snapshots`, `@var_log`, …)
+- [x] Btrfs subvolume layout (`@`, `@home`, `@snapshots`, `@var_log`, …)
 - [ ] Base install (pacstrap, `linux-hardened`, TTY-only package set)
 - [ ] systemd-boot + `sd-encrypt` initramfs
 - [ ] Secure Boot (sbctl, custom keys)
