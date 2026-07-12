@@ -76,6 +76,10 @@ sudo bash tests/luks-header-verify.sh             # REAL LUKS2 header on a spars
 sudo VM_TEST=1 ./tests/vm-pipeline-test           # VM only: partition → LUKS → Btrfs → mount, for real
 sudo ./test-installer                             # loop devices: the partitioning ladder
 ```
+ Verification: In addition to loop-device testing, this pipeline has been successfully executed against a live
+Arch Linux ISO (Archiso) inside a VM, confirming the installation workflow works as expected in a clean, real-world
+installation environment.
+
 
 `unit.bats` sources the installer and runs the real functions with the
 destructive binaries stubbed out; tests for phases that don't exist yet skip
