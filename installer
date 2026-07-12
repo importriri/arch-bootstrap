@@ -564,8 +564,9 @@ main() {
 	make_filesystems  || exit 1
 	create_subvolumes || exit 1
 	mount_layout      || exit 1
-
 	echo "[OK] disk encrypted and mounted — base install is the next phase" >&2
+	
+	trap - EXIT #fix: prevent premature unmount of disks on successful run
 }
 
 #============================================================================================
