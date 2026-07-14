@@ -15,11 +15,10 @@ Networking is `iwd` (wifi, `iwctl`) plus `systemd-networkd` (wired DHCP) and
 ship in the base set, so the machine is stage-2-ready the moment DNS resolves.
 
 > ⚠️ **Status: work in progress — pre-alpha.**
-> Partitioning, LUKS2 and the Btrfs subvolume layout are complete; a VM
-> pipeline test runs the real write path end to end on a loop device.
-> Base install and everything after are not written yet. Do **not** run this
-> against real hardware. Development happens against loop devices and
-> QEMU/KVM snapshots only.
+> The installer now goes all the way to a configured base system: pacstrap,
+> fstab, `sd-encrypt` initramfs, hostname/locale, the iwd/networkd/resolved
+> network stack enabled and a root password set — no bootloader yet, so the
+> result doesn't boot. Do **not** run this against real hardware. VMs only.
 
 ## Design principles
 
@@ -65,6 +64,8 @@ sudo ./installer
 
 # real run — only inside a VM for now
 sudo DRY_RUN=0 ./installer
+# a full real run asks two things along the way:
+# the LUKS passphrase and the root password for the new system
 ```
 
 ## Testing
@@ -76,10 +77,6 @@ sudo bash tests/luks-header-verify.sh             # REAL LUKS2 header on a spars
 sudo VM_TEST=1 ./tests/vm-pipeline-test           # VM only: partition → LUKS → Btrfs → mount, for real
 sudo ./test-installer                             # loop devices: the partitioning ladder
 ```
- Verification: In addition to loop-device testing, this pipeline has been successfully executed against a live
-Arch Linux ISO (Archiso) inside a VM, confirming the installation workflow works as expected in a clean, real-world
-installation environment.
-
 
 `unit.bats` sources the installer and runs the real functions with the
 destructive binaries stubbed out; tests for phases that don't exist yet skip
@@ -105,11 +102,11 @@ writeup in [`problems/`](problems/).
 - [x] Loop-device test suite
 - [x] LUKS2 encryption (argon2id)
 - [x] Btrfs subvolume layout (`@`, `@home`, `@snapshots`, `@var_log`, …)
-- [ ] Base install (pacstrap, `linux-hardened`, TTY-only package set)
+- [x] Base install (pacstrap, `linux-hardened`, TTY-only package set)
 - [ ] systemd-boot + `sd-encrypt` initramfs
 - [ ] Secure Boot (sbctl, custom keys)
 - [ ] zram configuration
-- [ ] Network for a headless host: iwd + systemd-networkd + systemd-resolved
+- [x] Network for a headless host: iwd + systemd-networkd + systemd-resolved
 - [ ] Optional dual disk: LUKS2 container for `@vm`, keyfile-unlocked via crypttab
 - [ ] Layered test suite (unit · real LUKS header · VM pipeline) wired into CI
 

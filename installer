@@ -43,6 +43,28 @@ readonly -a SUBVOL_LAYOUT=(
 	"@vm|/var/lib/libvirt/images|nocow"
 )
 
+# ---- base install ------------------------------------------------------------
+# linux-hardened is the whole point; base-devel stays out of the base image.
+# TTY-only host: no GPU driver, no bluetooth, no desktop. iwd (+ networkd/
+# resolved, enabled in configure_system) is the whole network stack — enough
+# to pull the Ansible stage. dosfstools: fsck.vfat for the ESP line genfstab
+# writes, or the first boot trips on it. both ucode packages: mkinitcpio's
+# microcode hook embeds the one that matches the CPU.
+readonly -a PACSTRAP_PACKAGES=(
+	base linux-hardened linux-firmware
+	intel-ucode amd-ucode
+	btrfs-progs cryptsetup dosfstools
+	sbctl
+	zram-generator
+	iwd
+	git ansible
+	sudo vim
+)
+readonly TARGET_HOSTNAME="${TARGET_HOSTNAME:-hypervisor-01}"
+readonly TARGET_TIMEZONE="${TARGET_TIMEZONE:-Europe/Rome}"
+readonly TARGET_LOCALE="${TARGET_LOCALE:-en_US.UTF-8}"
+readonly TARGET_KEYMAP="${TARGET_KEYMAP:-us}"
+
 #==========================================================================================
 #checks for root privileges ===============================================================
 #==========================================================================================
@@ -533,6 +555,145 @@ mount_layout() {
 }
 
 #============================================================================================
+# pacstrap_base: the base system onto the mounted tree ======================================
+#============================================================================================
+pacstrap_base() {
+	command -v pacstrap > /dev/null || { echo "pacstrap not found (arch-install-scripts)" >&2; return 1; }
+
+	if (( DRY_RUN )); then
+		echo "[DRY-RUN] would run: pacstrap -K $MOUNT_ROOT ${PACSTRAP_PACKAGES[*]}" >&2
+		return 0
+	fi
+
+	if ! mountpoint -q "$MOUNT_ROOT"; then
+		echo "$MOUNT_ROOT is not a mountpoint — mount the layout first" >&2
+		return 1
+	fi
+
+	echo "Installing base system (this takes a while) ..." >&2
+	pacstrap -K "$MOUNT_ROOT" "${PACSTRAP_PACKAGES[@]}" \
+		|| { echo "pacstrap failed" >&2; return 1; }
+
+	echo "[OK] base system installed" >&2
+	return 0
+}
+
+#============================================================================================
+# generate_fstab: genfstab by UUID =========================================================
+#============================================================================================
+generate_fstab() {
+	command -v genfstab > /dev/null || { echo "genfstab not found (arch-install-scripts)" >&2; return 1; }
+
+	if (( DRY_RUN )); then
+		echo "[DRY-RUN] would run: genfstab -U $MOUNT_ROOT >> $MOUNT_ROOT/etc/fstab" >&2
+		return 0
+	fi
+
+	if [[ ! -d $MOUNT_ROOT/etc ]]; then
+		echo "$MOUNT_ROOT/etc missing — run pacstrap first" >&2
+		return 1
+	fi
+
+	genfstab -U "$MOUNT_ROOT" >> "$MOUNT_ROOT/etc/fstab" \
+		|| { echo "genfstab failed" >&2; return 1; }
+	echo "[OK] fstab generated" >&2
+	return 0
+}
+
+#============================================================================================
+# configure_system: locale, time, hostname, mkinitcpio (systemd + sd-encrypt) ================
+#============================================================================================
+# runs inside arch-chroot. the HOOKS line is the crux: systemd + sd-encrypt,
+# never the legacy 'encrypt' hook — that is the whole reason the boot entry uses
+# rd.luks.name and not cryptdevice.
+configure_system() {
+	command -v arch-chroot > /dev/null || { echo "arch-chroot not found" >&2; return 1; }
+
+	#the mkinitcpio HOOKS this stack requires, in order. keyboard+sd-vconsole
+	#before sd-encrypt so the passphrase prompt has a working keymap.
+	local hooks="base systemd autodetect microcode modconf kms keyboard sd-vconsole block sd-encrypt filesystems fsck"
+
+	if (( DRY_RUN )); then
+		echo "[DRY-RUN] would set, inside $MOUNT_ROOT:" >&2
+		echo "[DRY-RUN]   timezone   $TARGET_TIMEZONE" >&2
+		echo "[DRY-RUN]   locale     $TARGET_LOCALE" >&2
+		echo "[DRY-RUN]   hostname   $TARGET_HOSTNAME" >&2
+		echo "[DRY-RUN]   keymap     $TARGET_KEYMAP" >&2
+		echo "[DRY-RUN]   HOOKS=($hooks)" >&2
+		echo "[DRY-RUN]   mkinitcpio -P" >&2
+		echo "[DRY-RUN]   /etc/iwd/main.conf (EnableNetworkConfiguration) + 20-wired.network (DHCP)" >&2
+		echo "[DRY-RUN]   systemctl enable iwd systemd-networkd systemd-resolved" >&2
+		echo "[DRY-RUN]   resolv.conf -> systemd-resolved stub" >&2
+		echo "[DRY-RUN]   passwd (interactive, root)" >&2
+		return 0
+	fi
+
+	if [[ ! -d $MOUNT_ROOT/etc ]]; then
+		echo "$MOUNT_ROOT/etc missing — run pacstrap first" >&2
+		return 1
+	fi
+
+	echo "Configuring system inside chroot ..." >&2
+
+	#timezone
+	arch-chroot "$MOUNT_ROOT" ln -sf "/usr/share/zoneinfo/$TARGET_TIMEZONE" /etc/localtime \
+		|| { echo "timezone link failed" >&2; return 1; }
+	arch-chroot "$MOUNT_ROOT" hwclock --systohc \
+		|| { echo "hwclock failed" >&2; return 1; }
+
+	#locale — appended only if absent, so a re-run cannot stack duplicates
+	if ! grep -qxF "$TARGET_LOCALE UTF-8" "$MOUNT_ROOT/etc/locale.gen"; then
+		echo "$TARGET_LOCALE UTF-8" >> "$MOUNT_ROOT/etc/locale.gen" \
+			|| { echo "appending to locale.gen failed" >&2; return 1; }
+	fi
+	arch-chroot "$MOUNT_ROOT" locale-gen \
+		|| { echo "locale-gen failed" >&2; return 1; }
+	echo "LANG=$TARGET_LOCALE" > "$MOUNT_ROOT/etc/locale.conf" \
+		|| { echo "writing locale.conf failed" >&2; return 1; }
+	echo "KEYMAP=$TARGET_KEYMAP" > "$MOUNT_ROOT/etc/vconsole.conf" \
+		|| { echo "writing vconsole.conf failed" >&2; return 1; }
+
+	#hostname
+	echo "$TARGET_HOSTNAME" > "$MOUNT_ROOT/etc/hostname" \
+		|| { echo "writing hostname failed" >&2; return 1; }
+
+	#the HOOKS line — full replacement of the array in mkinitcpio.conf
+	sed -i "s/^HOOKS=.*/HOOKS=($hooks)/" "$MOUNT_ROOT/etc/mkinitcpio.conf" \
+		|| { echo "editing mkinitcpio.conf failed" >&2; return 1; }
+	arch-chroot "$MOUNT_ROOT" mkinitcpio -P \
+		|| { echo "mkinitcpio -P failed" >&2; return 1; }
+
+	#network at first boot + a root password, or the installed system is a brick.
+	#TTY stack: iwd owns wifi (iwctl) and does its own DHCP on wlan; networkd
+	#covers wired DHCP; resolved owns DNS via the stub resolv.conf symlink.
+	mkdir -p "$MOUNT_ROOT/etc/iwd" "$MOUNT_ROOT/etc/systemd/network" \
+		|| { echo "mkdir network config dirs failed" >&2; return 1; }
+	cat > "$MOUNT_ROOT/etc/iwd/main.conf" <<-IWD \
+		|| { echo "writing iwd main.conf failed" >&2; return 1; }
+	[General]
+	EnableNetworkConfiguration=true
+	IWD
+	cat > "$MOUNT_ROOT/etc/systemd/network/20-wired.network" <<-NET \
+		|| { echo "writing 20-wired.network failed" >&2; return 1; }
+	[Match]
+	Name=en*
+
+	[Network]
+	DHCP=yes
+	NET
+	arch-chroot "$MOUNT_ROOT" systemctl enable iwd systemd-networkd systemd-resolved \
+		|| { echo "enabling network services failed" >&2; return 1; }
+	arch-chroot "$MOUNT_ROOT" ln -sf ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf \
+		|| { echo "linking resolv.conf failed" >&2; return 1; }
+	echo "Set the root password for the new system:" >&2
+	arch-chroot "$MOUNT_ROOT" passwd \
+		|| { echo "setting root password failed" >&2; return 1; }
+
+	echo "[OK] system configured (HOOKS include sd-encrypt)" >&2
+	return 0
+}
+
+#============================================================================================
 # main function =============================================================================
 #============================================================================================
 main() {
@@ -564,9 +725,15 @@ main() {
 	make_filesystems  || exit 1
 	create_subvolumes || exit 1
 	mount_layout      || exit 1
-	echo "[OK] disk encrypted and mounted — base install is the next phase" >&2
-	
+
+	#base system
+	pacstrap_base    || exit 1
+	generate_fstab   || exit 1
+	configure_system || exit 1
+
+	echo "[OK] installation complete — review, then reboot" >&2
 	trap - EXIT #fix: prevent premature unmount of disks on successful run
+
 }
 
 #============================================================================================
