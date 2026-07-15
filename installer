@@ -569,7 +569,10 @@ pacstrap_base() {
 		echo "$MOUNT_ROOT is not a mountpoint — mount the layout first" >&2
 		return 1
 	fi
-
+	
+	echo "Updating archlinux-keyring on the live host..." >&2  #fix: look at the line below
+	pacman -Sy --noconfirm archlinux-keyring || { echo "Failed to update keyring" >&2; return 1; } #fix: in case booting from an old arch iso
+	
 	echo "Installing base system (this takes a while) ..." >&2
 	pacstrap -K "$MOUNT_ROOT" "${PACSTRAP_PACKAGES[@]}" \
 		|| { echo "pacstrap failed" >&2; return 1; }
