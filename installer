@@ -687,7 +687,7 @@ configure_system() {
 	arch-chroot "$MOUNT_ROOT" systemctl enable iwd systemd-networkd systemd-resolved \
 		|| { echo "enabling network services failed" >&2; return 1; }
 	rm -f "$MOUNT_ROOT/etc/resolv.conf"
-	ln -sf /run/systemd/resolve/stub-resolv.conf "$MOUNT_ROOT/etc/resolv.conf" \
+	ln -sf ../run/systemd/resolve/stub-resolv.conf "$MOUNT_ROOT/etc/resolv.conf" \
 		|| { echo "linking resolv.conf failed" >&2; return 1; }
 	echo "Set the root password for the new system:" >&2
 	arch-chroot "$MOUNT_ROOT" passwd \
