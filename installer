@@ -316,7 +316,12 @@ encrypt_root() {
 		|| { echo "cryptsetup not found" >&2; return 1; }
 	if ! cryptsetup --help 2>&1 | grep -qw argon2id; then
 		echo "this cryptsetup build does not list argon2id as a PBKDF" >&2
-		return 1
+		echo "Installing argon2" >&2 
+		if pacman -Sy argon2; then
+			echo "Argon2 installed" >&2
+		fi
+		echo "Couldn't install Argon2"
+
 	fi
 
 	#sequencing precondition: the target must exist only for a REAL format. in
