@@ -15,10 +15,10 @@ Networking is `iwd` (wifi, `iwctl`) plus `systemd-networkd` (wired DHCP) and
 ship in the base set, so the machine is stage-2-ready the moment DNS resolves.
 
 > ⚠️ **Status: work in progress — pre-alpha.**
-> The installer now goes all the way to a configured base system: pacstrap,
-> fstab, `sd-encrypt` initramfs, hostname/locale, the iwd/networkd/resolved
-> network stack enabled and a root password set — no bootloader yet, so the
-> result doesn't boot. Do **not** run this against real hardware. VMs only.
+> The installed system boots into a TTY: systemd-boot entry built on
+> `rd.luks.name` (the LUKS UUID, not the GPT PARTUUID), zram in place of a
+> swap partition, wifi one `iwctl` away. Secure Boot is not written yet.
+> Do **not** run this against real hardware — QEMU/KVM snapshots only.
 
 ## Design principles
 
@@ -42,7 +42,7 @@ ship in the base set, so the machine is stage-2-ready the moment DNS resolves.
 | 1 | 1 GiB | ef00 | ARCH_ESP   | EFI System Partition (kernel + initramfs live here with systemd-boot) |
 | 2 | rest  | 8309 | ARCH_ROOT  | LUKS2 container (argon2id) → Btrfs subvolumes |
 
-No swap partition: zram only (configured in a later phase).
+No swap partition: zram only.
 
 Inside the container, all mounted `compress=zstd:1,noatime` — except `@vm`:
 
@@ -67,6 +67,18 @@ sudo DRY_RUN=0 ./installer
 # a full real run asks two things along the way:
 # the LUKS passphrase and the root password for the new system
 ```
+
+## First boot
+
+```bash
+# unlock at the sd-encrypt prompt, log in as root, then:
+iwctl station wlan0 connect "YOUR-SSID"   # wifi — or just plug ethernet in
+ping -c1 archlinux.org                    # networkd + resolved sanity check
+git clone https://github.com/importriri/privatestack-ansible   # stage 2
+```
+
+`git` and `ansible` are already installed: no pacman round-trip stands
+between an unlocked disk and the first playbook.
 
 ## Testing
 
@@ -103,9 +115,9 @@ writeup in [`problems/`](problems/).
 - [x] LUKS2 encryption (argon2id)
 - [x] Btrfs subvolume layout (`@`, `@home`, `@snapshots`, `@var_log`, …)
 - [x] Base install (pacstrap, `linux-hardened`, TTY-only package set)
-- [ ] systemd-boot + `sd-encrypt` initramfs
+- [x] systemd-boot + `sd-encrypt` initramfs
 - [ ] Secure Boot (sbctl, custom keys)
-- [ ] zram configuration
+- [x] zram configuration
 - [x] Network for a headless host: iwd + systemd-networkd + systemd-resolved
 - [ ] Optional dual disk: LUKS2 container for `@vm`, keyfile-unlocked via crypttab
 - [ ] Layered test suite (unit · real LUKS header · VM pipeline) wired into CI

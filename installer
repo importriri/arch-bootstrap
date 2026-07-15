@@ -694,6 +694,82 @@ configure_system() {
 }
 
 #============================================================================================
+# install_bootloader: systemd-boot + a real rd.luks.name entry ==============================
+#============================================================================================
+# the LUKS container UUID (luksUUID of the *partition*, not the GPT PARTUUID) is
+# what rd.luks.name needs. this is the live version of the hypervisor-lab boot
+# profile: sd-encrypt syntax, never cryptdevice.
+install_bootloader() {
+	command -v bootctl > /dev/null || { echo "bootctl not found" >&2; return 1; }
+
+	if (( DRY_RUN )); then
+		echo "[DRY-RUN] would run: arch-chroot $MOUNT_ROOT bootctl install" >&2
+		echo "[DRY-RUN] would derive LUKS UUID: cryptsetup luksUUID $ROOT_PART" >&2
+		echo "[DRY-RUN] would write loader entry with:" >&2
+		echo "[DRY-RUN]   options rd.luks.name=<UUID>=$LUKS_NAME root=$LUKS_MAPPER rootfstype=btrfs rootflags=subvol=@ rw" >&2
+		return 0
+	fi
+
+	if [[ ! -e $ROOT_PART ]]; then
+		echo "$ROOT_PART missing — cannot read its LUKS UUID" >&2
+		return 1
+	fi
+
+	local luks_uuid
+	luks_uuid=$(cryptsetup luksUUID "$ROOT_PART") \
+		|| { echo "could not read LUKS UUID of $ROOT_PART" >&2; return 1; }
+
+	arch-chroot "$MOUNT_ROOT" bootctl install \
+		|| { echo "bootctl install failed" >&2; return 1; }
+
+	#loader.conf
+	cat > "$MOUNT_ROOT/boot/loader/loader.conf" <<-LOADER \
+		|| { echo "writing loader.conf failed" >&2; return 1; }
+	default arch-hardened.conf
+	timeout 3
+	console-mode max
+	editor no
+	LOADER
+
+	#the entry: rd.luks.name (sd-encrypt), rootflags picks the @ subvol
+	cat > "$MOUNT_ROOT/boot/loader/entries/arch-hardened.conf" <<-ENTRY \
+		|| { echo "writing loader entry failed" >&2; return 1; }
+	title   Arch Linux (Hardened)
+	linux   /vmlinuz-linux-hardened
+	initrd  /initramfs-linux-hardened.img
+	options rd.luks.name=$luks_uuid=$LUKS_NAME root=$LUKS_MAPPER rootfstype=btrfs rootflags=subvol=@ rw
+	ENTRY
+
+	echo "[OK] systemd-boot installed, entry uses rd.luks.name=$luks_uuid" >&2
+	return 0
+}
+
+#============================================================================================
+# configure_zram: zram-generator, no swap partition =========================================
+#============================================================================================
+configure_zram() {
+	if (( DRY_RUN )); then
+		echo "[DRY-RUN] would write $MOUNT_ROOT/etc/systemd/zram-generator.conf (zram0, min(ram,8G), zstd)" >&2
+		return 0
+	fi
+
+	if [[ ! -d $MOUNT_ROOT/etc/systemd ]]; then
+		echo "$MOUNT_ROOT/etc/systemd missing — run pacstrap first" >&2
+		return 1
+	fi
+
+	cat > "$MOUNT_ROOT/etc/systemd/zram-generator.conf" <<-ZRAM \
+		|| { echo "writing zram-generator.conf failed" >&2; return 1; }
+	[zram0]
+	zram-size = min(ram, 8192)
+	compression-algorithm = zstd
+	ZRAM
+
+	echo "[OK] zram configured (no swap partition)" >&2
+	return 0
+}
+
+#============================================================================================
 # main function =============================================================================
 #============================================================================================
 main() {
@@ -731,7 +807,12 @@ main() {
 	generate_fstab   || exit 1
 	configure_system || exit 1
 
+	#boot + memory
+	install_bootloader || exit 1
+	configure_zram     || exit 1
+
 	echo "[OK] installation complete — review, then reboot" >&2
+	
 	trap - EXIT #fix: prevent premature unmount of disks on successful run
 
 }
@@ -750,7 +831,7 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
 	shopt -s inherit_errexit
 
 	trap cleanup EXIT
-
+	
 	main "$@"
 fi
 #===========================================================================================
