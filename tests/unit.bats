@@ -275,7 +275,10 @@ source_sandbox() {
 	grep -q "EnableNetworkConfiguration=true" "$sb/mnt/etc/iwd/main.conf"
 	grep -q "DHCP=yes" "$sb/mnt/etc/systemd/network/20-wired.network"
 	grep -q "systemctl enable iwd systemd-networkd systemd-resolved" "$STUB_LOG"
-	grep -q "stub-resolv.conf /etc/resolv.conf" "$STUB_LOG"
+	# resolv.conf is repointed at the systemd-resolved stub. the link is now made
+	# host-side (not through arch-chroot) to dodge EBUSY on the chroot's bind-mounted
+	# /etc/resolv.conf, so match the stub target + link basename, not the exact path.
+	grep -q "stub-resolv.conf .*/etc/resolv.conf" "$STUB_LOG"
 	# a TTY host has no business with NetworkManager, anywhere in the script
 	run grep -q "NetworkManager" "$INSTALLER"
 	[ "$status" -ne 0 ]
