@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/_stub_lib.sh"
+_log "$@"
+# emulates the live-host package manager. logs the call and succeeds; a test can
+# force failure with STUB_PACMAN_RC. it does NOT provide argon2id (that would be a
+# newer cryptsetup arriving), so encrypt_root's re-verify still decides.
+exit "${STUB_PACMAN_RC:-0}"

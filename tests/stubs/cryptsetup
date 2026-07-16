@@ -2,7 +2,15 @@
 source "$(dirname "$0")/_stub_lib.sh"
 _log "$@"
 case "$1" in
-  --help)   echo "supported PBKDF: pbkdf2, argon2i, argon2id" ;;   # grep -w argon2id must hit
+  --help)
+    # default: argon2id present. STUB_NO_ARGON2ID=1 simulates an old cryptsetup
+    # build (grep -w argon2id must MISS: "argon2i" is a different word).
+    if [[ -n ${STUB_NO_ARGON2ID:-} ]]; then
+      echo "supported PBKDF: pbkdf2, argon2i"
+    else
+      echo "supported PBKDF: pbkdf2, argon2i, argon2id"
+    fi
+    ;;
   isLuks)   exit "${STUB_ISLUKS:-1}" ;;                            # default: not a luks device
   luksUUID) echo "${STUB_LUKS_UUID:-11111111-2222-3333-4444-555555555555}" ;;
   luksFormat|open|close) : ;;                                      # succeed, header not really touched

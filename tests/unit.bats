@@ -184,6 +184,36 @@ source_sandbox() {
 	[[ "$output" == *"no header written"* ]]
 }
 
+@test "encrypt_root dry-run refuses when cryptsetup cannot argon2id" {
+	source_real
+	#a rehearsal must not "pass" on a box that can't argon2id, and must not shell
+	#out to the package manager. refuse, mutate nothing.
+	run bash -c "printf 'pw12345678\npw12345678\n' | { export DRY_RUN=1 STUB_NO_ARGON2ID=1; source '$INSTALLER'; encrypt_root '/no/such/part'; }"
+	[ "$status" -eq 1 ]
+	[[ "$output" == *"does not list argon2id"* ]]
+	[[ "$output" != *"no header written"* ]]
+	run grep -q "^pacman " "$STUB_LOG"
+	[ "$status" -ne 0 ]
+}
+
+@test "encrypt_root (real) updates cryptsetup for argon2id, aborts if still missing" {
+	source_real
+	local fakepart="$BATS_TEST_TMPDIR/fakepart"; : > "$fakepart"
+	#regression guard: the old code printed "Installing argon2", ran
+	#"pacman -Sy argon2" (wrong package — argon2id lives inside cryptsetup) and then
+	#fell through to luksFormat anyway. now it must UPDATE CRYPTSETUP and, if
+	#argon2id is still absent, abort BEFORE any header is written.
+	run bash -c "printf 'pw12345678\npw12345678\n' | { export DRY_RUN=0 STUB_NO_ARGON2ID=1; source '$INSTALLER'; encrypt_root '$fakepart'; }"
+	[ "$status" -eq 1 ]
+	[[ "$output" == *"still cannot argon2id"* ]]
+	#it updated cryptsetup, not the argon2 CLI package ...
+	grep -q "pacman .*cryptsetup" "$STUB_LOG"
+	[[ "$(cat "$STUB_LOG")" != *"pacman -Sy argon2"* ]]
+	#... and it never reached luksFormat
+	run grep -q "luksFormat" "$STUB_LOG"
+	[ "$status" -ne 0 ]
+}
+
 @test "dry-run pipeline: every phase after the gate succeeds before any partition exists" {
 	source_real
 	#the property the demo depends on: 'sudo ./installer' on a blank machine must
