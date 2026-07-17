@@ -9,7 +9,9 @@ systemd-boot · `sd-encrypt` mkinitcpio hooks · Secure Boot via sbctl with
 custom keys · `linux-hardened` · zram (no swap partition).
 
 **The host it produces:** TTY only — no GPU driver, no Bluetooth, no desktop.
-Its first job is to fetch the Ansible stage and become the lab, nothing else.
+Its first job is to fetch
+[the Ansible stage](https://github.com/importriri/privatestack-ansible) and
+become the lab, nothing else.
 Networking is `iwd` (wifi, `iwctl`) plus `systemd-networkd` (wired DHCP) and
 `systemd-resolved` (DNS), all enabled at install time; `git` and `ansible`
 ship in the base set, so the machine is stage-2-ready the moment DNS resolves.
