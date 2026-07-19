@@ -787,6 +787,46 @@ configure_zram() {
 	return 0
 }
 
+# setup_secureboot: sbctl, custom keys, sign kernel + bootloader ============================
+#============================================================================================
+# creates OUR keys and signs; it does NOT enroll them, because enrollment needs
+# the firmware in Setup Mode, a manual step the script must not fake. it prints
+# exactly what the user has to do next.
+setup_secureboot() {
+	if (( DRY_RUN )); then
+		echo "[DRY-RUN] would run inside chroot:" >&2
+		echo "[DRY-RUN]   sbctl create-keys" >&2
+		echo "[DRY-RUN]   sbctl sign -s /boot/EFI/systemd/systemd-bootx64.efi" >&2
+		echo "[DRY-RUN]   sbctl sign -s /boot/EFI/BOOT/BOOTX64.EFI" >&2
+		echo "[DRY-RUN]   sbctl sign -s /boot/vmlinuz-linux-hardened" >&2
+		echo "[DRY-RUN] enrollment (sbctl enroll-keys) is left to the user — needs Setup Mode" >&2
+		return 0
+	fi
+
+	if [[ ! -d $MOUNT_ROOT/boot/EFI ]]; then
+		echo "$MOUNT_ROOT/boot/EFI missing — install the bootloader first" >&2
+		return 1
+	fi
+
+	arch-chroot "$MOUNT_ROOT" sbctl create-keys \
+		|| { echo "sbctl create-keys failed" >&2; return 1; }
+
+	local target
+	for target in \
+		/boot/EFI/systemd/systemd-bootx64.efi \
+		/boot/EFI/BOOT/BOOTX64.EFI \
+		/boot/vmlinuz-linux-hardened
+	do
+		arch-chroot "$MOUNT_ROOT" sbctl sign -s "$target" \
+			|| { echo "sbctl sign failed on $target" >&2; return 1; }
+	done
+
+	echo "[OK] keys created and files signed" >&2
+	echo "     NEXT (manual): reboot to firmware, clear factory keys / enter Setup Mode," >&2
+	echo "     then run 'sbctl enroll-keys' and enable Secure Boot." >&2
+	return 0
+}
+
 #============================================================================================
 # main function =============================================================================
 #============================================================================================
@@ -828,6 +868,9 @@ main() {
 	#boot + memory
 	install_bootloader || exit 1
 	configure_zram     || exit 1
+
+	#secure boot (keys + signing; enrollment is manual)
+	setup_secureboot || exit 1
 
 	echo "[OK] installation complete — review, then reboot" >&2
 	

@@ -16,11 +16,11 @@ Networking is `iwd` (wifi, `iwctl`) plus `systemd-networkd` (wired DHCP) and
 `systemd-resolved` (DNS), all enabled at install time; `git` and `ansible`
 ship in the base set, so the machine is stage-2-ready the moment DNS resolves.
 
-> ⚠️ **Status: work in progress — pre-alpha.**
-> The installed system boots into a TTY: systemd-boot entry built on
-> `rd.luks.name` (the LUKS UUID, not the GPT PARTUUID), zram in place of a
-> swap partition, wifi one `iwctl` away. Secure Boot is not written yet.
-> Do **not** run this against real hardware — QEMU/KVM snapshots only.
+> ⚠️ **Status: feature-complete for a single disk — pre-release.**
+> LUKS2 → Btrfs → base system → systemd-boot → Secure Boot signing with our
+> own keys (enrollment stays manual: it needs the firmware in Setup Mode,
+> and the script won't fake that). Not yet validated on real hardware —
+> VMs only until it is.
 
 ## Design principles
 
@@ -118,7 +118,7 @@ writeup in [`problems/`](problems/).
 - [x] Btrfs subvolume layout (`@`, `@home`, `@snapshots`, `@var_log`, …)
 - [x] Base install (pacstrap, `linux-hardened`, TTY-only package set)
 - [x] systemd-boot + `sd-encrypt` initramfs
-- [ ] Secure Boot (sbctl, custom keys)
+- [x] Secure Boot (sbctl, custom keys)
 - [x] zram configuration
 - [x] Network for a headless host: iwd + systemd-networkd + systemd-resolved
 - [ ] Optional dual disk: LUKS2 container for `@vm`, keyfile-unlocked via crypttab
