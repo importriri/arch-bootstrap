@@ -143,7 +143,7 @@ Release procedure: [`docs/release-gates.md`](docs/release-gates.md).
 
 Stage 1 of a three-stage build:
 **arch-bootstrap** (base install, this repo) → **Ansible roles** (configuration, planned) →
-**[arch-hypervisor-lab](https://github.com/importriri/arch-hypervisor-lab)** (the four-domain KVM/VFIO lab it all leads to).
+**[arch-hypervisor-lab](https://github.com/importriri/arch-hypervisor-lab)** (the five-domain KVM/VFIO lab it all leads to).
 
 ## License
 
