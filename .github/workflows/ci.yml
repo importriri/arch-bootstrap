@@ -1,27 +1,15 @@
 name: ci
-on:
-  push:
-  pull_request:
-
+on: [push, pull_request]
 jobs:
-  lint:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: install bats
-        run: sudo apt-get update && sudo apt-get install -y bats
-
-      - name: shellcheck installer
-        run: shellcheck installer
-
-      - name: shellcheck test suite (follows the sourced installer)
-        run: shellcheck -x test-installer
-
-      - name: bash syntax check
-        run: |
-          bash -n installer
-          bash -n test-installer
-
-      - name: unit tests (no root)
+      - name: deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck bats cryptsetup-bin
+      - name: lint
+        run: shellcheck -x installer test-installer tests/luks-header-verify.sh tests/vm-pipeline-test
+      - name: unit (bats, stubs)
         run: bats tests/unit.bats
+      - name: real LUKS2 header verify
+        run: sudo bash tests/luks-header-verify.sh

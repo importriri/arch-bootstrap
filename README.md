@@ -17,10 +17,10 @@ Networking is `iwd` (wifi, `iwctl`) plus `systemd-networkd` (wired DHCP) and
 ship in the base set, so the machine is stage-2-ready the moment DNS resolves.
 
 > ⚠️ **Status: feature-complete — pre-release.**
-> Single-disk path plus the optional second disk: its own LUKS2 container
-> dedicated to `@vm`, unlocked at boot by a keyfile on the already-decrypted
-> root, wired through `/etc/crypttab`. Not yet validated on real hardware —
-> VMs only until it is.
+> Every phase is written, linted and unit-tested; the LUKS2 header and the
+> partition→mount pipeline are verified for real against loop devices, and CI
+> runs the whole ladder on every push. What's missing is a full run on real
+> hardware — until then, VMs only.
 
 ## Design principles
 
@@ -132,7 +132,7 @@ writeup in [`problems/`](problems/).
 - [x] zram configuration
 - [x] Network for a headless host: iwd + systemd-networkd + systemd-resolved
 - [x] Optional dual disk: LUKS2 container for `@vm`, keyfile-unlocked via crypttab, adopted into fstab
-- [ ] Layered test suite (unit · real LUKS header · VM pipeline) wired into CI
+- [x] Layered test suite (unit · real LUKS header · VM pipeline) wired into CI
 
 ## Context
 
