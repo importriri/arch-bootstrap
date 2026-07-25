@@ -17,10 +17,10 @@ Networking is `iwd` (wifi, `iwctl`) plus `systemd-networkd` (wired DHCP) and
 ship in the base set, so the machine is stage-2-ready the moment DNS resolves.
 
 > ⚠️ **Status: feature-complete — pre-release.**
-> Every phase is written, linted and unit-tested; the LUKS2 header and the
-> partition→mount pipeline are verified for real against loop devices, and CI
-> runs the whole ladder on every push. What's missing is a full run on real
-> hardware — until then, VMs only.
+> Every phase is written, linted and unit-tested, and CI verifies a real LUKS2
+> header on every push. The destructive VM pipeline and both target laptops are
+> separate release gates; until those logs are recorded, compatibility remains
+> pending rather than assumed.
 
 ## Design principles
 
@@ -56,14 +56,16 @@ Inside the container, all mounted `compress=zstd:1,noatime` — except `@vm`:
 | `@var_log` | `/var/log` | survives a root rollback |
 | `@var_cache` | `/var/cache` | |
 | `@var_tmp` | `/var/tmp` | |
-| `@vm` | `/var/lib/libvirt/images` | `nodatacow` + `chattr +C`, no compression — COW and VM images don't mix |
+| `@vm` | `/var/lib/libvirt/images` | `chattr +C` while empty; no per-subvolume mount-option claim |
 
 With a second disk, `@vm` moves to its own LUKS2 container (`cryptvm`),
 unlocked at boot by a root-only keyfile via `/etc/crypttab` — and *adopted*:
 the installer mounts the new container at `/var/lib/libvirt/images` and
 rewrites the fstab line to point at it, so one passphrase typed means two
-disks open **and mounted**. The `@vm` subvolume inside the root container
-stays behind, empty and unmounted, as a fallback.
+disks open **and mounted**. The `@vm` subvolume inside the root container stays behind, empty and
+unmounted, as a fallback. No `nodatacow` mount option is advertised: Btrfs
+mount options are filesystem-wide, so the installer enforces the per-directory
+contract with `chattr +C` before any image exists.
 
 ## Usage
 
@@ -132,7 +134,10 @@ writeup in [`problems/`](problems/).
 - [x] zram configuration
 - [x] Network for a headless host: iwd + systemd-networkd + systemd-resolved
 - [x] Optional dual disk: LUKS2 container for `@vm`, keyfile-unlocked via crypttab, adopted into fstab
-- [x] Layered test suite (unit · real LUKS header · VM pipeline) wired into CI
+- [x] Unit + real LUKS header verification wired into CI
+- [ ] Destructive VM pipeline recorded for the release candidate
+
+Release procedure: [`docs/release-gates.md`](docs/release-gates.md).
 
 ## Context
 

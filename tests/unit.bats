@@ -324,7 +324,7 @@ source_sandbox() {
 	mkdir -p "$sb/mnt/etc"
 	export STUB_LUKS_UUID="aaaa1111-bbbb-2222-cccc-333344445555"
 	# the line genfstab wrote for the root-side @vm: it must NOT survive
-	printf 'UUID=root-fs-uuid /var/lib/libvirt/images btrfs rw,noatime,nodatacow,subvol=/@vm 0 0\n' \
+	printf 'UUID=root-fs-uuid /var/lib/libvirt/images btrfs rw,noatime,compress=zstd:1,subvol=/@vm 0 0\n' \
 		> "$sb/mnt/etc/fstab"
 
 	run encrypt_vm_disk "$sb/dev/seconddisk"
@@ -336,10 +336,18 @@ source_sandbox() {
 	# adoption: the old root-container line is gone, the mapper line is in
 	run grep -q "UUID=root-fs-uuid" "$sb/mnt/etc/fstab"
 	[ "$status" -ne 0 ]
-	grep -q "^/dev/mapper/cryptvm /var/lib/libvirt/images btrfs rw,noatime,nodatacow 0 0$" \
+	grep -q "^/dev/mapper/cryptvm /var/lib/libvirt/images btrfs rw,noatime 0 0$" \
 		"$sb/mnt/etc/fstab"
 	# leftover signatures are killed on the new partition, like on the root disk
 	grep -q "^wipefs" "$STUB_LOG"
+}
+
+
+@test "VM storage relies on chattr +C, not a misleading nodatacow mount option" {
+	source_real
+	run grep -E 'mount -o .*nodatacow|btrfs rw,[^[:space:]]*nodatacow' "$INSTALLER"
+	[ "$status" -ne 0 ]
+	grep -q 'chattr +C' "$INSTALLER"
 }
 
 # ---- dry-run of the later phases is honest (touches nothing) -----------------
