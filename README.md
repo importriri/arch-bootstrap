@@ -16,10 +16,10 @@ Networking is `iwd` (wifi, `iwctl`) plus `systemd-networkd` (wired DHCP) and
 `systemd-resolved` (DNS), all enabled at install time; `git` and `ansible`
 ship in the base set, so the machine is stage-2-ready the moment DNS resolves.
 
-> ⚠️ **Status: feature-complete for a single disk — pre-release.**
-> LUKS2 → Btrfs → base system → systemd-boot → Secure Boot signing with our
-> own keys (enrollment stays manual: it needs the firmware in Setup Mode,
-> and the script won't fake that). Not yet validated on real hardware —
+> ⚠️ **Status: feature-complete — pre-release.**
+> Single-disk path plus the optional second disk: its own LUKS2 container
+> dedicated to `@vm`, unlocked at boot by a keyfile on the already-decrypted
+> root, wired through `/etc/crypttab`. Not yet validated on real hardware —
 > VMs only until it is.
 
 ## Design principles
@@ -58,10 +58,18 @@ Inside the container, all mounted `compress=zstd:1,noatime` — except `@vm`:
 | `@var_tmp` | `/var/tmp` | |
 | `@vm` | `/var/lib/libvirt/images` | `nodatacow` + `chattr +C`, no compression — COW and VM images don't mix |
 
+With a second disk, `@vm` moves to its own LUKS2 container (`cryptvm`),
+unlocked at boot by a root-only keyfile via `/etc/crypttab` — and *adopted*:
+the installer mounts the new container at `/var/lib/libvirt/images` and
+rewrites the fstab line to point at it, so one passphrase typed means two
+disks open **and mounted**. The `@vm` subvolume inside the root container
+stays behind, empty and unmounted, as a fallback.
+
 ## Usage
 
 ```bash
-# dry run (default): shows what every phase *would* do, writes nothing
+# dry run (default): shows what every phase *would* do, writes nothing —
+# and rehearses the FULL pipeline end to end even on a blank machine
 sudo ./installer
 
 # real run — only inside a VM for now
@@ -94,7 +102,9 @@ sudo ./test-installer                             # loop devices: the partitioni
 
 `unit.bats` sources the installer and runs the real functions with the
 destructive binaries stubbed out; tests for phases that don't exist yet skip
-themselves, so one suite follows the project through every milestone.
+themselves, so one suite follows the project through every milestone. One
+test pins the demo itself: the whole dry-run pipeline must succeed on a
+machine where no partition exists yet.
 `luks-header-verify.sh` mocks nothing: it formats a sparse file and reads the
 header back (`luksDump` — argon2id, aes-xts, 512-bit), then proves the
 passphrase newline trap on a real keyslot. The pipeline test runs the real
@@ -121,7 +131,7 @@ writeup in [`problems/`](problems/).
 - [x] Secure Boot (sbctl, custom keys)
 - [x] zram configuration
 - [x] Network for a headless host: iwd + systemd-networkd + systemd-resolved
-- [ ] Optional dual disk: LUKS2 container for `@vm`, keyfile-unlocked via crypttab
+- [x] Optional dual disk: LUKS2 container for `@vm`, keyfile-unlocked via crypttab, adopted into fstab
 - [ ] Layered test suite (unit · real LUKS header · VM pipeline) wired into CI
 
 ## Context

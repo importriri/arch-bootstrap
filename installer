@@ -65,6 +65,15 @@ readonly TARGET_TIMEZONE="${TARGET_TIMEZONE:-Europe/Rome}"
 readonly TARGET_LOCALE="${TARGET_LOCALE:-en_US.UTF-8}"
 readonly TARGET_KEYMAP="${TARGET_KEYMAP:-us}"
 
+# ---- dual disk (optional) ----------------------------------------------------
+# a second disk becomes a separate LUKS2 container dedicated to @vm, unlocked at
+# boot by a keyfile that lives on the already-decrypted root (via /etc/crypttab).
+readonly VM_LABEL="ARCH_VM"
+readonly VM_PART="/dev/disk/by-partlabel/${VM_LABEL}"
+readonly VM_LUKS_NAME="cryptvm"
+readonly VM_LUKS_MAPPER="/dev/mapper/${VM_LUKS_NAME}"
+readonly VM_KEYFILE="/etc/cryptsetup-keys.d/${VM_LUKS_NAME}.key"
+
 #==========================================================================================
 #checks for root privileges ===============================================================
 #==========================================================================================
@@ -118,6 +127,10 @@ check_network() {
 #interactive target disk selection==========================================================
 #===========================================================================================
 check_disk() {
+	#option 0 is context dependent: "abort" on the first call, "skip" when main
+	#offers the optional second disk. the caller names it; the default stands.
+	local zero_label="${1:-Abort installation}"
+
 	#checking for disks
 	local -a disks
 	mapfile -t disks < <(lsblk -dnpo NAME,SIZE,TYPE \
@@ -134,7 +147,7 @@ check_disk() {
 	for i in "${!disks[@]}"; do
 		echo "$(( i + 1 ))) ${disks[i]}" >&2
 	done
-	echo "0) Abort installation" >&2
+	echo "0) ${zero_label}" >&2
 
 	#menu loop
 	local choice selected
@@ -155,7 +168,7 @@ check_disk() {
 		#base10
 		choice=$(( 10#$choice ))
 		if (( choice == 0 )); then
-			echo "Installation aborted by user" >&2
+			echo "${zero_label} (0) — no disk selected" >&2
 			return 1
 		fi
 
@@ -178,7 +191,8 @@ check_disk() {
 cleanup() {
 	#unmount filesystem
 	umount -R "$MOUNT_ROOT" 2>/dev/null || true
-	#closing the disk
+	#closing the disks (reverse of open order: vm first, then root)
+	cryptsetup close "$VM_LUKS_NAME" 2>/dev/null || true
 	cryptsetup close "$LUKS_NAME" 2>/dev/null || true
 }
 
@@ -828,6 +842,99 @@ setup_secureboot() {
 }
 
 #============================================================================================
+# encrypt_vm_disk: optional second disk, LUKS2 unlocked by keyfile ==========================
+#============================================================================================
+# a second disk gets its own LUKS2 container for @vm, unlocked automatically at
+# boot by a keyfile stored on the (already-decrypted) root, wired through
+# /etc/crypttab. this is opt-in: main only calls it when a second disk exists.
+encrypt_vm_disk() {
+	local disk="$1"
+
+	#the vm mountpoint comes from the layout's nocow record: one source of truth,
+	#never a second hardcoded copy of the path
+	local vm_mount="" record subvol mnt extra
+	for record in "${SUBVOL_LAYOUT[@]}"; do
+		IFS='|' read -r subvol mnt extra <<< "$record"
+		[[ $extra == "nocow" ]] && vm_mount="$mnt"
+	done
+	if [[ -z $vm_mount ]]; then
+		echo "no nocow record in SUBVOL_LAYOUT — nowhere to adopt the vm disk" >&2
+		return 1
+	fi
+
+	if (( DRY_RUN )); then
+		echo "[DRY-RUN] would partition $disk (single $VM_LABEL partition) and wipefs it" >&2
+		echo "[DRY-RUN] would luksFormat $VM_PART (luks2/$LUKS_PBKDF) with a random keyfile" >&2
+		echo "[DRY-RUN] would store keyfile at $MOUNT_ROOT$VM_KEYFILE (root-only, 0000)" >&2
+		echo "[DRY-RUN] would add crypttab line: $VM_LUKS_NAME UUID=<uuid> $VM_KEYFILE luks" >&2
+		echo "[DRY-RUN] would mkfs.btrfs on $VM_LUKS_MAPPER and mount it at $MOUNT_ROOT$vm_mount" >&2
+		echo "[DRY-RUN] would move the $vm_mount fstab line to $VM_LUKS_MAPPER" >&2
+		return 0
+	fi
+
+	#partition the second disk: one big partition labelled ARCH_VM
+	sgdisk --zap-all -n "1:0:0" -t "1:8309" -c "1:${VM_LABEL}" "$disk" >&2 \
+		|| { echo "sgdisk failed on $disk" >&2; return 1; }
+	partprobe "$disk" || { echo "partprobe failed on $disk" >&2; return 1; }
+	udevadm settle || { echo "udevadm settle failed" >&2; return 1; }
+	[[ -e $VM_PART ]] || { echo "$VM_PART did not appear" >&2; return 1; }
+
+	#kill old filesystem signatures surviving inside the new partition, same as
+	#partition_disk does for the root disk
+	wipefs -a "$VM_PART" >&2 || { echo "wipefs (vm) failed" >&2; return 1; }
+
+	#the keyfile lives on the encrypted root; generate it there with tight perms
+	install -Dm000 /dev/null "$MOUNT_ROOT$VM_KEYFILE" \
+		|| { echo "could not create keyfile path" >&2; return 1; }
+	dd if=/dev/urandom of="$MOUNT_ROOT$VM_KEYFILE" bs=512 count=8 status=none \
+		|| { echo "keyfile generation failed" >&2; return 1; }
+	#belt and braces, same non-fatal shape as chattr in mount_layout: install
+	#-Dm000 already guaranteed the mode and dd does not change it, so a failure
+	#here cannot leave the keyfile open — it only means the belt broke, not the braces
+	chmod 000 "$MOUNT_ROOT$VM_KEYFILE" 2>/dev/null || true
+
+	#format + open the vm container with that keyfile
+	cryptsetup luksFormat --type luks2 --cipher "$LUKS_CIPHER" --key-size "$LUKS_KEY_SIZE" \
+		--hash "$LUKS_HASH" --pbkdf "$LUKS_PBKDF" --batch-mode \
+		--key-file "$MOUNT_ROOT$VM_KEYFILE" "$VM_PART" \
+		|| { echo "luksFormat (vm) failed" >&2; return 1; }
+	cryptsetup open --key-file "$MOUNT_ROOT$VM_KEYFILE" "$VM_PART" "$VM_LUKS_NAME" \
+		|| { echo "luksOpen (vm) failed" >&2; return 1; }
+
+	#crypttab: unlocked after root, by keyfile. the UUID form is stable.
+	local vm_uuid
+	vm_uuid=$(cryptsetup luksUUID "$VM_PART") || { echo "vm luksUUID failed" >&2; return 1; }
+	echo "$VM_LUKS_NAME UUID=$vm_uuid $VM_KEYFILE luks" >> "$MOUNT_ROOT/etc/crypttab" \
+		|| { echo "writing crypttab failed" >&2; return 1; }
+
+	#dedicate the whole second container to the vm mountpoint
+	mkfs.btrfs -L vm "$VM_LUKS_MAPPER" > /dev/null \
+		|| { echo "mkfs.btrfs (vm) failed" >&2; return 1; }
+
+	#adopt: this container replaces the root-side @vm at $vm_mount ------------------
+	#without this, crypttab unlocks a disk nothing ever mounts, and fstab keeps
+	#pointing the mountpoint at the root container — the second disk sits unused.
+	#the @vm subvol inside the root container stays behind, empty and unmounted.
+	local target="$MOUNT_ROOT$vm_mount"
+	umount "$target" 2>/dev/null || true   #mounted by mount_layout; absent on reruns
+	mount -o noatime,nodatacow "$VM_LUKS_MAPPER" "$target" \
+		|| { echo "mount of $VM_LUKS_MAPPER at $target failed" >&2; return 1; }
+	#belt and braces, same as mount_layout: +C on the still-empty top dir
+	chattr +C "$target" 2>/dev/null || true
+
+	#fstab: drop the line genfstab wrote for the root-side @vm, add the mapper.
+	#matching on the mountpoint field keeps this immune to UUID churn.
+	sed -i "\|[[:space:]]${vm_mount}[[:space:]]|d" "$MOUNT_ROOT/etc/fstab" \
+		|| { echo "editing fstab failed" >&2; return 1; }
+	printf '%s %s btrfs rw,noatime,nodatacow 0 0\n' "$VM_LUKS_MAPPER" "$vm_mount" \
+		>> "$MOUNT_ROOT/etc/fstab" \
+		|| { echo "appending the vm fstab line failed" >&2; return 1; }
+
+	echo "[OK] second disk encrypted and adopted: $vm_mount now lives on $VM_LUKS_MAPPER" >&2
+	return 0
+}
+
+#============================================================================================
 # main function =============================================================================
 #============================================================================================
 main() {
@@ -871,6 +978,20 @@ main() {
 
 	#secure boot (keys + signing; enrollment is manual)
 	setup_secureboot || exit 1
+
+	#optional: a second disk becomes an encrypted @vm container
+	echo >&2
+	echo "Optional: dedicate a second disk to the vm images (own LUKS2 container)." >&2
+	local second
+	if second=$(check_disk "Skip — no second disk") && [[ -n $second ]]; then
+		if [[ $second == "$disk" ]]; then
+			#a silent skip here would hide a slip of the finger; say it out loud
+			echo "That is the primary disk ($disk) — second-disk step skipped" >&2
+		else
+			confirm_wipe "$second"    || exit 1
+			encrypt_vm_disk "$second" || exit 1
+		fi
+	fi
 
 	echo "[OK] installation complete — review, then reboot" >&2
 	
