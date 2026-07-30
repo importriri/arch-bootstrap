@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # test suite for installer — same architecture as installer
-# usage:  sudo ./test-installer     
+# usage:  sudo ./test-installer
 
 # lint:   shellcheck -x test-installer
 

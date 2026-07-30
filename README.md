@@ -1,149 +1,113 @@
 # arch-bootstrap
 
-![lint](https://github.com/importriri/arch-bootstrap/actions/workflows/ci.yml/badge.svg)
+[![ci](https://github.com/importriri/arch-bootstrap/actions/workflows/ci.yml/badge.svg)](https://github.com/importriri/arch-bootstrap/actions/workflows/ci.yml)
 
-A minimal, test-driven Arch Linux installer written in plain bash.
+A plain Bash installer for the encrypted Arch Linux base used by my KVM/VFIO
+laptop lab.
 
-**Target stack (non-negotiable):** LUKS2 (argon2id) · Btrfs subvolumes ·
-systemd-boot · `sd-encrypt` mkinitcpio hooks · Secure Boot via sbctl with
-custom keys · `linux-hardened` · zram (no swap partition).
+It installs:
 
-**The host it produces:** TTY only — no GPU driver, no Bluetooth, no desktop.
-Its first job is to fetch
-[the Ansible stage](https://github.com/importriri/privatestack-ansible) and
-become the lab, nothing else.
-Networking is `iwd` (wifi, `iwctl`) plus `systemd-networkd` (wired DHCP) and
-`systemd-resolved` (DNS), all enabled at install time; `git` and `ansible`
-ship in the base set, so the machine is stage-2-ready the moment DNS resolves.
+- LUKS2 with Argon2id;
+- Btrfs subvolumes;
+- systemd-boot and `sd-encrypt`;
+- `linux-hardened`;
+- Secure Boot keys managed with `sbctl`;
+- zram instead of a swap partition;
+- iwd, systemd-networkd and systemd-resolved;
+- Git and Ansible for the second configuration stage.
 
-> ⚠️ **Status: feature-complete — pre-release.**
-> Every phase is written, linted and unit-tested, and CI verifies a real LUKS2
-> header on every push. The destructive VM pipeline and both target laptops are
-> separate release gates; until those logs are recorded, compatibility remains
-> pending rather than assumed.
+The installed system is TTY-only. GPU drivers, the desktop and libvirt are
+configured later by
+[privatestack-ansible](https://github.com/importriri/privatestack-ansible).
 
-## Design principles
+> **Status: pre-release.** The script, unit tests and disposable storage tests
+> are available. A successful VM run does not replace a clean install and boot
+> check on each target laptop.
 
-- **Safe by default.** `DRY_RUN=1` unless you explicitly say otherwise:
-  the script shows what it *would* do (`sgdisk --pretend`) and writes nothing.
-- **Verify, don't trust.** Every destructive step sits behind an explicit
-  gate (retype the full disk path to confirm) and a guard (refuses to wipe
-  the live boot medium). Every critical command checks its own exit code —
-  `set -e` is the net, not the plan.
-- **Tested before trusted.** A companion test suite exercises the real
-  functions (sourced, not copied) against loop devices: the gate, the
-  dry-run honesty, the real write path, udev symlinks, GPT contents.
-- **Stable references.** Partitions are addressed via GPT partlabels
-  (`/dev/disk/by-partlabel/…`), never by concatenated device names —
-  immune to the `sda1` vs `nvme0n1p1` suffix trap.
+## Safety model
 
-## Layout produced
+`DRY_RUN=1` is the default. The installer prints the planned operations and
+uses `sgdisk --pretend` without writing a partition table.
 
-| # | Size | Type | Partlabel  | Purpose                          |
-|---|------|------|------------|----------------------------------|
-| 1 | 1 GiB | ef00 | ARCH_ESP   | EFI System Partition (kernel + initramfs live here with systemd-boot) |
-| 2 | rest  | 8309 | ARCH_ROOT  | LUKS2 container (argon2id) → Btrfs subvolumes |
+A real run requires the full target device path to be typed again. The script
+also refuses the live boot medium and checks the result of each destructive
+step. Partitions are referenced by GPT partlabel rather than names such as
+`sda1` or `nvme0n1p1`.
 
-No swap partition: zram only.
+## Disk layout
 
-Inside the container, all mounted `compress=zstd:1,noatime` — except `@vm`:
+| Partition | Size | Type | Partlabel | Purpose |
+|---|---:|---|---|---|
+| ESP | 1 GiB | `ef00` | `ARCH_ESP` | systemd-boot, kernel and initramfs |
+| Root | remaining space | `8309` | `ARCH_ROOT` | LUKS2 container with Btrfs |
 
-| Subvolume | Mounted at | Notes |
-|-----------|------------|-------|
-| `@` | `/` | pacman's db stays in here on purpose: a rollback of `@` can never desync it |
-| `@home` | `/home` | |
-| `@snapshots` | `/.snapshots` | |
-| `@var_log` | `/var/log` | survives a root rollback |
-| `@var_cache` | `/var/cache` | |
-| `@var_tmp` | `/var/tmp` | |
-| `@vm` | `/var/lib/libvirt/images` | `chattr +C` while empty; no per-subvolume mount-option claim |
+Root subvolumes:
 
-With a second disk, `@vm` moves to its own LUKS2 container (`cryptvm`),
-unlocked at boot by a root-only keyfile via `/etc/crypttab` — and *adopted*:
-the installer mounts the new container at `/var/lib/libvirt/images` and
-rewrites the fstab line to point at it, so one passphrase typed means two
-disks open **and mounted**. The `@vm` subvolume inside the root container stays behind, empty and
-unmounted, as a fallback. No `nodatacow` mount option is advertised: Btrfs
-mount options are filesystem-wide, so the installer enforces the per-directory
-contract with `chattr +C` before any image exists.
+| Subvolume | Mount point | Notes |
+|---|---|---|
+| `@` | `/` | Includes the pacman database so a root rollback remains consistent |
+| `@home` | `/home` | User data |
+| `@snapshots` | `/.snapshots` | Snapshot mount |
+| `@var_log` | `/var/log` | Logs survive a root rollback |
+| `@var_cache` | `/var/cache` | Package and application caches |
+| `@var_tmp` | `/var/tmp` | Persistent temporary files |
+| `@vm` | `/var/lib/libvirt/images` | Created empty and marked `+C` |
+
+The normal Btrfs mounts use `compress=zstd:1,noatime`. VM storage relies on the
+per-directory No_COW attribute instead of a filesystem-wide `nodatacow` mount
+option.
+
+An optional second disk can be formatted as an encrypted `cryptvm` filesystem.
+A root-only keyfile unlocks it through `/etc/crypttab`, and the installer mounts
+it at `/var/lib/libvirt/images`. The root filesystem's empty `@vm` subvolume is
+left as a fallback.
 
 ## Usage
 
 ```bash
-# dry run (default): shows what every phase *would* do, writes nothing —
-# and rehearses the FULL pipeline end to end even on a blank machine
+# Default dry run
 sudo ./installer
 
-# real run — only inside a VM for now
+# Real write path: use only on a disposable VM or a disk you intend to erase
 sudo DRY_RUN=0 ./installer
-# a full real run asks two things along the way:
-# the LUKS passphrase and the root password for the new system
 ```
+
+A real run asks for the LUKS passphrase and the root password for the new
+system.
 
 ## First boot
 
 ```bash
-# unlock at the sd-encrypt prompt, log in as root, then:
-iwctl station wlan0 connect "YOUR-SSID"   # wifi — or just plug ethernet in
-ping -c1 archlinux.org                    # networkd + resolved sanity check
-git clone https://github.com/importriri/privatestack-ansible   # stage 2
+iwctl station wlan0 connect "YOUR-SSID"   # or connect Ethernet
+ping -c1 archlinux.org
+git clone https://github.com/importriri/privatestack-ansible
 ```
 
-`git` and `ansible` are already installed: no pacman round-trip stands
-between an unlocked disk and the first playbook.
-
-## Testing
+## Verification
 
 ```bash
-shellcheck -x installer test-installer tests/*   # lint, everywhere
-bats tests/unit.bats                              # unit: real functions, stubbed tools
-sudo bash tests/luks-header-verify.sh             # REAL LUKS2 header on a sparse file
-sudo VM_TEST=1 ./tests/vm-pipeline-test           # VM only: partition → LUKS → Btrfs → mount, for real
-sudo ./test-installer                             # loop devices: the partitioning ladder
+shellcheck -x installer test-installer tests/*
+bats tests/unit.bats
+sudo bash tests/luks-header-verify.sh
+sudo VM_TEST=1 ./tests/vm-pipeline-test
+sudo ./test-installer
 ```
 
-`unit.bats` sources the installer and runs the real functions with the
-destructive binaries stubbed out; tests for phases that don't exist yet skip
-themselves, so one suite follows the project through every milestone. One
-test pins the demo itself: the whole dry-run pipeline must succeed on a
-machine where no partition exists yet.
-`luks-header-verify.sh` mocks nothing: it formats a sparse file and reads the
-header back (`luksDump` — argon2id, aes-xts, 512-bit), then proves the
-passphrase newline trap on a real keyslot. The pipeline test runs the real
-write path end to end on a loop device and asserts what matters: seven
-subvolumes, `compress=zstd:1` on `@`, `nodatacow`+`+C` on `@vm`, the ESP on
-`/boot` — and outside a VM it skips itself and says why. The loop-device
-suite is unchanged: dependencies first, disposable images, teardown on every
-exit path. No real disk is ever touched.
+The unit suite sources the real installer functions while replacing destructive
+commands. `luks-header-verify.sh` creates and reads a real LUKS2 header on a
+sparse file. The VM pipeline and loop-device suite use disposable devices and
+tear them down on every exit path.
 
-When the tooling itself breaks in interesting ways, the story gets a
-writeup in [`problems/`](problems/).
+Release and hardware checks are listed in
+[`docs/release-gates.md`](docs/release-gates.md). Problems that changed the
+implementation are kept under [`problems/`](problems/).
 
-## Roadmap
+## Project context
 
-- [x] Preflight checks (root, 64-bit UEFI, network)
-- [x] Interactive target disk selection (zram-aware, validated input)
-- [x] Destruction gate (path re-typing, live-media guard)
-- [x] GPT partitioning (dry-run by default, partlabels, kernel/udev sync)
-- [x] Loop-device test suite
-- [x] LUKS2 encryption (argon2id)
-- [x] Btrfs subvolume layout (`@`, `@home`, `@snapshots`, `@var_log`, …)
-- [x] Base install (pacstrap, `linux-hardened`, TTY-only package set)
-- [x] systemd-boot + `sd-encrypt` initramfs
-- [x] Secure Boot (sbctl, custom keys)
-- [x] zram configuration
-- [x] Network for a headless host: iwd + systemd-networkd + systemd-resolved
-- [x] Optional dual disk: LUKS2 container for `@vm`, keyfile-unlocked via crypttab, adopted into fstab
-- [x] Unit + real LUKS header verification wired into CI
-- [ ] Destructive VM pipeline recorded for the release candidate
-
-Release procedure: [`docs/release-gates.md`](docs/release-gates.md).
-
-## Context
-
-Stage 1 of a three-stage build:
-**arch-bootstrap** (base install, this repo) → **Ansible roles** (configuration, planned) →
-**[arch-hypervisor-lab](https://github.com/importriri/arch-hypervisor-lab)** (the five-domain KVM/VFIO lab it all leads to).
+```text
+arch-bootstrap  ->  privatestack-ansible  ->  arch-hypervisor-lab
+base install        host configuration        architecture and test records
+```
 
 ## License
 

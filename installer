@@ -606,10 +606,11 @@ pacstrap_base() {
 		echo "$MOUNT_ROOT is not a mountpoint — mount the layout first" >&2
 		return 1
 	fi
-	
-	echo "Updating archlinux-keyring on the live host..." >&2  #fix: look at the line below
-	pacman -Sy --noconfirm archlinux-keyring || { echo "Failed to update keyring" >&2; return 1; } #fix: in case booting from an old arch iso
-	
+
+	echo "Updating archlinux-keyring on the live host..." >&2
+	pacman -Sy --noconfirm archlinux-keyring \
+		|| { echo "Failed to update keyring" >&2; return 1; }
+
 	echo "Installing base system (this takes a while) ..." >&2
 	pacstrap -K "$MOUNT_ROOT" "${PACSTRAP_PACKAGES[@]}" \
 		|| { echo "pacstrap failed" >&2; return 1; }
@@ -1002,26 +1003,25 @@ main() {
 	setup_secureboot || exit 1
 
 	echo "[OK] installation complete — review, then reboot" >&2
-	
-	trap - EXIT #fix: prevent premature unmount of disks on successful run
+
+	trap - EXIT  # keep the installed system mounted after a successful run
 
 }
 
 #============================================================================================
 # launcher ==================================================================================
 # ===========================================================================================
-# Execute main only when script is launched not when sourced, so it's possible to use "source
-# installer" in a shell and test every single function in isolation, nice to have for tests in
-# VMs
+# Run main only when the file is executed. Sourcing it keeps the functions
+# available for tests without starting the installer.
 # ===========================================================================================
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
-	#strict mode is enabled only here, so sourcing the script doesn't force -euo pipefail
-	#onto the interactive shell
+	# Strict mode is enabled only here, so sourcing the script does not
+	# change the caller's shell options.
 	set -euo pipefail
 	shopt -s inherit_errexit
 
 	trap cleanup EXIT
-	
+
 	main "$@"
 fi
 #===========================================================================================
