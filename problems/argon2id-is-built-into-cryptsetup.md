@@ -51,7 +51,7 @@ on a box that can't argon2id must refuse and touch nothing — no package
 manager on a rehearsal.
 
 ```bash
-if ! cryptsetup --help 2>&1 | grep -qw argon2id; then
+if ! cryptsetup --help 2>&1 | grep -w argon2id > /dev/null; then
         echo "this cryptsetup build does not list argon2id as a PBKDF" >&2
         if (( DRY_RUN )); then
                 echo "refusing: update cryptsetup before a real run" >&2
@@ -60,10 +60,17 @@ if ! cryptsetup --help 2>&1 | grep -qw argon2id; then
         echo "Updating cryptsetup on the live host ..." >&2
         pacman -Sy --noconfirm cryptsetup \
                 || { echo "updating cryptsetup failed" >&2; return 1; }
-        cryptsetup --help 2>&1 | grep -qw argon2id \
+        cryptsetup --help 2>&1 | grep -w argon2id > /dev/null \
                 || { echo "cryptsetup still cannot argon2id after the update — aborting" >&2; return 1; }
 fi
 ```
+
+The match must consume the complete help stream. `grep -q` looks attractive,
+but the real storage gate runs with `pipefail`: after an early match, `grep -q`
+closes the pipe while `cryptsetup` still has help text to write. The resulting
+SIGPIPE makes the pipeline non-zero and turns a present `argon2id` into a false
+negative. Redirecting ordinary `grep` to `/dev/null` preserves quiet output
+while allowing the producer to finish normally.
 
 ## It stays proven, not just commented
 
@@ -75,6 +82,8 @@ reported argon2id. Two things make the real path testable without an old ISO:
   different word);
 - a `pacman` stub logs its call and succeeds without providing argon2id, so
   the re-verify still gets the last word.
+- the long-help fixture places `argon2id` before more than a pipe buffer of
+  output, reproducing the hardware-only `grep -q`/`pipefail` false negative.
 
 `tests/unit.bats` then pins both directions: a dry-run with argon2id absent
 must exit non-zero, say so, and never shell out to pacman; a real run must try

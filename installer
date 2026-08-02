@@ -336,7 +336,10 @@ encrypt_root() {
 	#on a box which can't argon2id would be a lie
 	command -v cryptsetup > /dev/null \
 		|| { echo "cryptsetup not found" >&2; return 1; }
-	if ! cryptsetup --help 2>&1 | grep -qw argon2id; then
+	# Do not use grep -q here. Callers deliberately enable pipefail, and with
+	# cryptsetup's long help output an early grep exit gives cryptsetup SIGPIPE;
+	# that turns a successful match into a failed capability probe.
+	if ! cryptsetup --help 2>&1 | grep -w argon2id > /dev/null; then
 		#argon2id is compiled INTO cryptsetup (libargon2, at build time). the
 		#standalone `argon2` package is just the CLI and adds NOTHING to an already
 		#built cryptsetup, so the only thing that helps a live host is a newer
@@ -351,7 +354,7 @@ encrypt_root() {
 		echo "Updating cryptsetup on the live host ..." >&2
 		pacman -Sy --noconfirm cryptsetup \
 			|| { echo "updating cryptsetup failed" >&2; return 1; }
-		cryptsetup --help 2>&1 | grep -qw argon2id \
+		cryptsetup --help 2>&1 | grep -w argon2id > /dev/null \
 			|| { echo "cryptsetup still cannot argon2id after the update — aborting" >&2; return 1; }
 	fi
 

@@ -160,6 +160,19 @@ source_sandbox() {
 	[ "$before" = "$after" ]
 }
 
+@test "encrypt_root accepts long cryptsetup help with pipefail enabled" {
+	source_real
+	local fakepart="$BATS_TEST_TMPDIR/fakepart"
+	head -c 4096 /dev/zero > "$fakepart"
+	# The storage gate sources the installer from a shell with pipefail enabled.
+	# grep -q used to stop at the early argon2id match, SIGPIPE the long-help
+	# producer, and misclassify a capable cryptsetup build as unsupported.
+	run bash -c "printf 'pw12345678\npw12345678\n' | { set -o pipefail; export DRY_RUN=1 STUB_LONG_HELP_AFTER_ARGON2ID=1; source '$INSTALLER'; encrypt_root '$fakepart'; }"
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"cryptsetup luksFormat"* ]]
+	[[ "$output" != *"does not list argon2id"* ]]
+}
+
 @test "encrypt_root warns when the target already holds a LUKS header" {
 	source_real
 	local fakepart="$BATS_TEST_TMPDIR/fakepart"

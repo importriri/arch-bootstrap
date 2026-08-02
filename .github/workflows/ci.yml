@@ -9,13 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install test dependencies
+      - name: Install the fixed verification toolchain
         run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck bats cryptsetup-bin
-      - name: Bash syntax
-        run: bash -n installer test-installer tests/*.sh tests/vm-pipeline-test
-      - name: Shellcheck
-        run: shellcheck -x installer test-installer tests/luks-header-verify.sh tests/vm-pipeline-test
-      - name: Unit tests with destructive tools stubbed
-        run: bats tests/unit.bats
-      - name: Real LUKS2 header verification
-        run: sudo bash tests/luks-header-verify.sh
+      - name: Run the complete local verification entrypoint
+        run: sudo bash verify.sh

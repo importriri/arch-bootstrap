@@ -7,6 +7,15 @@ case "$1" in
     # build (grep -w argon2id must MISS: "argon2i" is a different word).
     if [[ -n ${STUB_NO_ARGON2ID:-} ]]; then
       echo "supported PBKDF: pbkdf2, argon2i"
+    elif [[ -n ${STUB_LONG_HELP_AFTER_ARGON2ID:-} ]]; then
+      # A real cryptsetup help page continues well beyond the PBKDF line. This
+      # catches grep -q probes which falsely fail under pipefail when the
+      # producer receives SIGPIPE after grep exits on the early match.
+      echo "supported PBKDF: pbkdf2, argon2i, argon2id"
+      # seq exits non-zero on the closed pipe, making the historical false
+      # negative deterministic instead of depending on stdio buffering.
+      seq 1 100000
+      exit $?
     else
       echo "supported PBKDF: pbkdf2, argon2i, argon2id"
     fi

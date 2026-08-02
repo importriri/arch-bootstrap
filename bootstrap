@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# Complete arch-bootstrap entrypoint. The installer remains the tested engine;
+# this wrapper verifies its mounted result and writes the stage-2 hand-off.
+
+BOOTSTRAP_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=installer
+source "$BOOTSTRAP_DIR/installer"
+
+readonly BOOTSTRAP_STORAGE_CONTRACT="/etc/privatestack/bootstrap-storage.yml"
+
+vm_storage_mountpoint() {
+	local record mountpoint extra
+	for record in "${SUBVOL_LAYOUT[@]}"; do
+		IFS='|' read -r _ mountpoint extra <<< "$record"
+		if [[ $extra == "nocow" ]]; then
+			printf '%s\n' "$mountpoint"
+			return 0
+		fi
+	done
+	echo "No NOCOW VM storage record exists in SUBVOL_LAYOUT" >&2
+	return 1
+}
+
+normalize_mapper_source() {
+	local source="$1"
+	printf '%s\n' "${source%%\[*}"
+}
+
+detect_vm_storage_topology() {
+	local mountpoint target source mapper fsroot
+	mountpoint=$(vm_storage_mountpoint) || return 1
+	target="$MOUNT_ROOT$mountpoint"
+	source=$(findmnt -n -o SOURCE --target "$target") \
+		|| { echo "VM storage is not mounted at $target" >&2; return 1; }
+	fsroot=$(findmnt -n -o FSROOT --target "$target") \
+		|| { echo "Could not identify the VM storage filesystem root" >&2; return 1; }
+	mapper=$(normalize_mapper_source "$source")
+
+	case "$mapper:$fsroot" in
+		"$LUKS_MAPPER:/@vm") printf '%s\n' single-disk ;;
+		"$VM_LUKS_MAPPER:/") printf '%s\n' dedicated-disk ;;
+		*)
+			echo "Unsupported VM storage shape: source=$source fsroot=$fsroot" >&2
+			return 1
+			;;
+	esac
+}
+
+finalize_vm_storage_key() {
+	local topology="$1"
+	[[ $topology == "dedicated-disk" ]] || return 0
+	[[ -f $MOUNT_ROOT$VM_KEYFILE && ! -L $MOUNT_ROOT$VM_KEYFILE ]] \
+		|| { echo "Dedicated VM keyfile is missing or redirected" >&2; return 1; }
+	chmod 0400 "$MOUNT_ROOT$VM_KEYFILE" \
+		|| { echo "Could not enforce mode 0400 on the VM keyfile" >&2; return 1; }
+}
+
+verify_vm_storage() {
+	local topology="$1"
+	local mountpoint target expected_source expected_fsroot source mapper fstype fsroot
+	local attributes unexpected
+	mountpoint=$(vm_storage_mountpoint) || return 1
+	target="$MOUNT_ROOT$mountpoint"
+
+	expected_source="$LUKS_MAPPER"
+	expected_fsroot="/@vm"
+	if [[ $topology == "dedicated-disk" ]]; then
+		expected_source="$VM_LUKS_MAPPER"
+		expected_fsroot="/"
+	fi
+
+	[[ -d $target && ! -L $target ]] \
+		|| { echo "VM storage target is not a real directory: $target" >&2; return 1; }
+
+	source=$(findmnt -n -o SOURCE --target "$target") \
+		|| { echo "VM storage is not mounted at $target" >&2; return 1; }
+	fstype=$(findmnt -n -o FSTYPE --target "$target") \
+		|| { echo "Could not identify the VM storage filesystem" >&2; return 1; }
+	fsroot=$(findmnt -n -o FSROOT --target "$target") \
+		|| { echo "Could not identify the VM storage filesystem root" >&2; return 1; }
+	mapper=$(normalize_mapper_source "$source")
+
+	[[ $mapper == "$expected_source" ]] \
+		|| { echo "VM storage source mismatch: expected $expected_source, observed $source" >&2; return 1; }
+	[[ $fstype == "btrfs" ]] \
+		|| { echo "VM storage must be Btrfs, observed $fstype" >&2; return 1; }
+	[[ $fsroot == "$expected_fsroot" ]] \
+		|| { echo "VM storage fsroot mismatch: expected $expected_fsroot, observed $fsroot" >&2; return 1; }
+
+	attributes=$(lsattr -d -- "$target" 2>/dev/null | awk '{print $1}') \
+		|| { echo "Could not read VM storage attributes" >&2; return 1; }
+	[[ $attributes == *C* ]] \
+		|| { echo "VM storage lacks the inherited NOCOW (+C) contract" >&2; return 1; }
+
+	unexpected=$(find "$target" -mindepth 1 -maxdepth 1 -print -quit) \
+		|| { echo "Could not inspect the new VM storage root" >&2; return 1; }
+	[[ -z $unexpected ]] \
+		|| { echo "VM storage is not empty before the stage-2 hand-off: $unexpected" >&2; return 1; }
+
+	echo "[OK] VM storage verified: topology=$topology source=$source fsroot=$fsroot mount=$mountpoint" >&2
+}
+
+write_storage_contract() {
+	local topology="$1"
+	local mountpoint expected_source expected_subvolume vm_partlabel contract_path
+	mountpoint=$(vm_storage_mountpoint) || return 1
+	expected_source="$LUKS_MAPPER"
+	expected_subvolume="@vm"
+	vm_partlabel="null"
+	if [[ $topology == "dedicated-disk" ]]; then
+		expected_source="$VM_LUKS_MAPPER"
+		expected_subvolume="null"
+		vm_partlabel="$VM_LABEL"
+	fi
+	contract_path="$MOUNT_ROOT$BOOTSTRAP_STORAGE_CONTRACT"
+
+	install -d -m 0755 -o root -g root "$(dirname "$contract_path")" \
+		|| { echo "Could not create the bootstrap contract directory" >&2; return 1; }
+	cat > "$contract_path" <<EOF
+# Written by arch-bootstrap after the mounted storage passed post-conditions.
+schema_version: 1
+vm_store:
+  topology: $topology
+  mountpoint: $mountpoint
+  mapper: $expected_source
+  fstype: btrfs
+  subvolume: $expected_subvolume
+  require_nocow: true
+  root_partlabel: $ROOT_LABEL
+  vm_partlabel: $vm_partlabel
+EOF
+	chown root:root "$contract_path" \
+		|| { echo "Could not own the bootstrap storage contract" >&2; return 1; }
+	chmod 0644 "$contract_path" \
+		|| { echo "Could not protect the bootstrap storage contract" >&2; return 1; }
+
+	echo "[OK] stage-2 storage contract written: $BOOTSTRAP_STORAGE_CONTRACT" >&2
+}
+
+bootstrap_main() {
+	bash "$BOOTSTRAP_DIR/installer" "$@" || return 1
+
+	if (( DRY_RUN )); then
+		echo "[DRY-RUN] real installation would verify the selected VM-store mapper/fsroot/+C" >&2
+		echo "[DRY-RUN] real installation would write $BOOTSTRAP_STORAGE_CONTRACT" >&2
+		return 0
+	fi
+
+	local topology
+	topology=$(detect_vm_storage_topology) || return 1
+	finalize_vm_storage_key "$topology" || return 1
+	verify_vm_storage "$topology" || return 1
+	write_storage_contract "$topology" || return 1
+
+	trap - EXIT
+	echo "[OK] arch-bootstrap complete — storage is ready for privatestack-ansible" >&2
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+	set -euo pipefail
+	shopt -s inherit_errexit
+	trap cleanup EXIT
+	bootstrap_main "$@"
+fi
