@@ -14,10 +14,10 @@ first job is to fetch
 and become the hypervisor lab. `iwd`, `systemd-networkd`,
 `systemd-resolved`, Git and Ansible are installed and enabled before hand-off.
 
-> **Status: pre-release candidate.** The storage hand-off and two-loop-device
-> release gates are implemented. The exact candidate still has to pass the full
-> local verifier, the disposable-VM storage test and clean Nitro/Predator
-> installations before a stable release is claimed.
+> **Status: hardware-tested pre-release.** The complete local verifier and the
+> disposable two-loop-device storage gate passed from an Arch VM on the Nitro.
+> A VM pass does not replace clean-install and boot evidence on the physical
+> Nitro and Predator targets, so no stable release is claimed yet.
 
 ## Entrypoints
 
@@ -111,10 +111,10 @@ mapper `/dev/mapper/cryptroot`, `subvolume: "@vm"` and `vm_partlabel: null`.
 ## Usage
 
 ```bash
-# Complete rehearsal; non-destructive by default.
+# Inspect the complete installation plan without writing partition tables.
 sudo bash bootstrap
 
-# Real clean installation after reviewing the rehearsal.
+# Apply the reviewed plan; this erases every explicitly confirmed target disk.
 sudo env DRY_RUN=0 bash bootstrap
 ```
 
@@ -125,13 +125,25 @@ manual firmware step after the generated assets are reviewed.
 ## First boot
 
 ```bash
-# Unlock cryptroot at the sd-encrypt prompt, then log in as root.
-iwctl station wlan0 connect "YOUR-SSID"   # or use wired DHCP
+# Connect the new host to Wi-Fi; wired DHCP needs no iwctl command.
+iwctl station wlan0 connect "YOUR-SSID"
+
+# Verify local networking, DNS resolution and internet reachability.
 ping -c1 archlinux.org
+
+# Fetch the stage-2 automation.
 git clone https://github.com/importriri/privatestack-ansible
+
+# Enter the repository root so every relative contract path resolves correctly.
 cd privatestack-ansible
+
+# Install the exact Ansible collections declared by stage 2.
 ansible-galaxy collection install -r collections/requirements.yml
+
+# Detect the reviewed laptop profile without changing the host.
 ansible-playbook playbooks/preflight.yml
+
+# Preview the complete headless foundation and show the managed diff.
 ansible-playbook playbooks/foundation.yml --check --diff
 ```
 
@@ -146,6 +158,7 @@ immediate `changed=0` proof.
 Hosted CI and local verification use the same entrypoint:
 
 ```bash
+# Run syntax, lint, Bats and real sparse-file LUKS2 verification.
 sudo bash verify.sh
 ```
 
@@ -156,6 +169,7 @@ The remaining storage test deliberately needs an Arch-capable throwaway VM with
 device-mapper, udev and mount support:
 
 ```bash
+# Exercise the destructive storage path only on two disposable loop devices.
 sudo VM_TEST=1 bash tests/vm-pipeline-test
 ```
 
@@ -176,7 +190,8 @@ It uses two sparse loop devices and proves:
 not a substitute for the complete two-disk gate.
 
 Release procedure: [`docs/release-gates.md`](docs/release-gates.md).
-Interesting tooling failures are documented under [`problems/`](problems/).
+Interesting tooling failures are indexed under
+[`problems/README.md`](problems/README.md).
 
 ## Roadmap
 
@@ -189,7 +204,7 @@ Interesting tooling failures are documented under [`problems/`](problems/).
 - [x] one local/hosted verification entrypoint;
 - [x] two-loop-device release gate implemented;
 - [x] safe rerun and visible teardown contract implemented;
-- [ ] complete two-loop-device PASS evidence from the disposable VM;
+- [x] complete two-loop-device PASS evidence from the disposable Arch VM;
 - [ ] Nitro clean-install evidence on the frozen release candidate;
 - [ ] Predator clean-install and portability evidence on the same candidate.
 
