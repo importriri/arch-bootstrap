@@ -245,7 +245,7 @@ grep -q '^  mountpoint: /var/lib/libvirt/images$' "$contract" || fail "contract 
 grep -q '^  mapper: /dev/mapper/cryptvm$' "$contract" || fail "contract mapper mismatch"
 grep -q '^  subvolume: null$' "$contract" || fail "contract subvolume mismatch"
 grep -q '^  require_nocow: true$' "$contract" || fail "contract NOCOW policy missing"
-pass "stage-2 storage contract binds Hyperlab to the dedicated VM disk"
+pass "stage-2 storage contract binds HyperLab to the dedicated VM disk"
 
 echo
 echo "ALL TWO-DISK BOOTSTRAP PIPELINE TESTS PASSED (teardown runs automatically)"

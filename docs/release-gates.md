@@ -1,8 +1,14 @@
 # Release gates
 
 The bootstrap is released as one exact pipeline, not as a generic claim that
-every laptop is identical. Compatibility is recorded only against frozen
-commits and sanitized M9 evidence.
+every laptop is identical. Compatibility is recorded only against exact
+commits and sanitized hardware evidence.
+
+## Current hardware state
+
+- Nitro 5: bootstrap-to-stage-2 host path passed.
+- Nitro frozen clean-install release evidence: pending.
+- Predator clean-install and portability evidence: pending.
 
 ## Gate 1 — software verification
 
@@ -13,9 +19,9 @@ sudo bash verify.sh
 ```
 
 It must pass Bash syntax, ShellCheck, all Bats contracts and real LUKS2 header
-inspection. The M9 `repository-proof` gate runs this entrypoint from the frozen
-checkout and records only the combined verification hash, clean-worktree state
-and exact commit identity.
+inspection. The repository-proof gate runs this entrypoint from the exact checkout and
+records only the combined verification hash, clean-worktree state and commit
+identity.
 
 ## Gate 2 — disposable two-disk VM
 
@@ -49,8 +55,8 @@ failure or missing final marker is not a pass.
 6. boot `linux-hardened` twice;
 7. verify LUKS2, Btrfs mounts, `+C`, fstab, crypttab, keyfile mode, networking and
    the stage-2 contract;
-8. run the frozen `privatestack-ansible` foundation and full Nitro campaign;
-9. record reviewed scalar evidence through the M9 runner.
+8. run the exact selected `privatestack-ansible` host campaign;
+9. record sanitized scalar evidence through the hardware runner.
 
 The Nitro PCIe power-management workaround remains part of the managed VFIO
 profile. It was isolated on Nitro before being reused on Predator; routine
@@ -65,7 +71,7 @@ dedicated VM disks and removes the primary disk from the second selection.
 Repeat the Nitro sequence and additionally prove:
 
 - the observed VM mount source and filesystem root match the declared topology;
-- all Hyperlab state below `/var/lib/libvirt/images/hyperlab` is physically on
+- all HyperLab state below `/var/lib/libvirt/images/hyperlab` is physically on
   the dedicated encrypted disk;
 - reboot unlocks `cryptroot`, then keyfile-unlocks and mounts `cryptvm` without a
   second passphrase;
@@ -73,10 +79,11 @@ Repeat the Nitro sequence and additionally prove:
 - the Nitro-derived `pcie_port_pm=off` fix remains effective on the RTX 3070
   profile.
 
-## Evidence and merge rule
+## Evidence and publication rule
 
-A component fix, hosted green CI or one successful laptop does not authorize a
-merge by itself. The M9 campaign receipt must bind:
+A component fix, hosted green CI or one successful laptop does not authorize
+publication of a runtime change by itself. The hardware campaign receipt must
+bind:
 
 ```text
 exact arch-bootstrap commit
@@ -87,6 +94,8 @@ Predator ordered gate result
 sanitized publication hash
 ```
 
-Only after the corresponding hardware gate passes may its reviewed milestone be
-merged. Any software fix changes the frozen identity and requires the affected
+A runtime change may be committed directly to `main` only after its required
+software and hardware gates pass. Documentation-only changes may be committed
+after software verification when they do not alter installation or runtime
+behavior. Any runtime fix changes the frozen identity and requires the affected
 hardware sequence to be repeated.

@@ -14,10 +14,10 @@ first job is to fetch
 and become the hypervisor lab. `iwd`, `systemd-networkd`,
 `systemd-resolved`, Git and Ansible are installed and enabled before hand-off.
 
-> **Status: hardware-tested pre-release.** The complete local verifier and the
-> disposable two-loop-device storage gate passed from an Arch VM on the Nitro.
-> A VM pass does not replace clean-install and boot evidence on the physical
-> Nitro and Predator targets, so no stable release is claimed yet.
+> **Status: Nitro host path validated; release evidence still pending.** The
+> complete local verifier, disposable two-loop-device storage gate and
+> bootstrap-to-stage-2 host path have been exercised on the Nitro 5. A stable
+> release still requires frozen clean-install evidence on Nitro and Predator.
 
 ## Entrypoints
 
@@ -85,7 +85,7 @@ With two disks, the second selected disk is completely dedicated to VM state:
 7. mapper, filesystem root, Btrfs, `+C` and emptiness are verified;
 8. `/etc/privatestack/bootstrap-storage.yml` records the hand-off.
 
-The root-side `@vm` remains empty and unmounted as a fallback. All Hyperlab
+The root-side `@vm` remains empty and unmounted as a fallback. All HyperLab
 content created later below `/var/lib/libvirt/images/hyperlab` therefore lives
 on the dedicated encrypted disk: bases, permanent/disposable VM disks,
 cloud-init, NVRAM, TPM state, snapshots, exports and service backups.
@@ -114,7 +114,7 @@ mapper `/dev/mapper/cryptroot`, `subvolume: "@vm"` and `vm_partlabel: null`.
 # Inspect the complete installation plan without writing partition tables.
 sudo bash bootstrap
 
-# Apply the reviewed plan; this erases every explicitly confirmed target disk.
+# Apply the printed plan; this erases every explicitly confirmed target disk.
 sudo env DRY_RUN=0 bash bootstrap
 ```
 
@@ -140,18 +140,27 @@ cd privatestack-ansible
 # Install the exact Ansible collections declared by stage 2.
 ansible-galaxy collection install -r collections/requirements.yml
 
-# Detect the reviewed laptop profile without changing the host.
-ansible-playbook playbooks/preflight.yml
+# Detect the matching hardware profile without changing the host.
+ansible-playbook -K playbooks/preflight.yml
 
-# Preview the complete headless foundation and show the managed diff.
-ansible-playbook playbooks/foundation.yml --check --diff
+# Preview the complete host target and show the managed diff.
+ansible-playbook -K playbooks/lab.yml --check --diff
+
+# Reconcile the complete host target.
+ansible-playbook -K playbooks/lab.yml
+
+# Prove idempotence; this pass must report changed=0.
+ansible-playbook -K playbooks/lab.yml
+
+# Run the complete Stage 2 software verifier.
+./verify.sh
 ```
 
-The foundation validates the bootstrap contract before creating the Hyperlab
-image tree. A mismatch between declared topology and observed mapper,
-filesystem root or NOCOW state fails before images or VM state are written.
-Follow the stage-2 repository's clean-install order for the real apply and its
-immediate `changed=0` proof.
+The preflight validates the bootstrap contract before any HyperLab image or VM
+state is created. `lab.yml` then reconciles the headless foundation, Sway, VFIO
+and the Looking Glass host side. The second real apply must report `changed=0`.
+Image import and VM lifecycle operations remain explicit because they create or
+destroy private workload state.
 
 ## Verification
 
@@ -205,13 +214,14 @@ Interesting tooling failures are indexed under
 - [x] two-loop-device release gate implemented;
 - [x] safe rerun and visible teardown contract implemented;
 - [x] complete two-loop-device PASS evidence from the disposable Arch VM;
+- [x] Nitro bootstrap-to-stage-2 host-path evidence;
 - [ ] Nitro clean-install evidence on the frozen release candidate;
 - [ ] Predator clean-install and portability evidence on the same candidate.
 
 ## Project context
 
 `arch-bootstrap` builds the encrypted base host → `privatestack-ansible`
-assembles the hypervisor and service VMs →
+reconciles the hypervisor host and manages guest and service lifecycle →
 [`arch-hypervisor-lab`](https://github.com/importriri/arch-hypervisor-lab)
 records architecture and sanitized hardware evidence.
 
