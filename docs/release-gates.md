@@ -10,7 +10,7 @@ commits and sanitized hardware evidence.
 - Nitro frozen clean-install release evidence: pending.
 - Predator clean-install and portability evidence: pending.
 
-## Gate 1 — software verification
+## Gate 1: software verification
 
 Hosted CI and local verification execute the same command:
 
@@ -23,7 +23,7 @@ inspection. The repository-proof gate runs this entrypoint from the exact checko
 records only the combined verification hash, clean-worktree state and commit
 identity.
 
-## Gate 2 — disposable two-disk VM
+## Gate 2: disposable two-disk VM
 
 Run this inside an Arch-capable throwaway VM:
 
@@ -45,7 +45,7 @@ Teardown errors are visible and make the gate fail.
 Record the complete local log and its SHA-256. A skipped test, hidden cleanup
 failure or missing final marker is not a pass.
 
-## Gate 3 — Nitro clean installation
+## Gate 3: Nitro clean installation
 
 1. verify an external backup;
 2. boot the reviewed Archiso in 64-bit UEFI mode;
@@ -62,7 +62,7 @@ The Nitro PCIe power-management workaround remains part of the managed VFIO
 profile. It was isolated on Nitro before being reused on Predator; routine
 release testing does not deliberately remove it and reintroduce a hard freeze.
 
-## Gate 4 — Predator portability installation
+## Gate 4: Predator portability installation
 
 Predator must use the exact bootstrap and Ansible commits that passed Nitro.
 Before a real write, confirm the menu identifies the intended primary and

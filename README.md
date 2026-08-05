@@ -8,7 +8,7 @@ A minimal, test-driven Arch Linux bootstrap written in Bash.
 `sd-encrypt` mkinitcpio hooks · Secure Boot keys through `sbctl` ·
 `linux-hardened` · zram, with no swap partition.
 
-**The host it produces:** TTY only—no GPU driver, Bluetooth or desktop. Its
+**The host it produces:** TTY only: no GPU driver, Bluetooth or desktop. Its
 first job is to fetch
 [`privatestack-ansible`](https://github.com/importriri/privatestack-ansible)
 and become the hypervisor lab. `iwd`, `systemd-networkd`,
