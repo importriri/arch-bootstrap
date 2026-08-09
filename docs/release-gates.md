@@ -55,7 +55,7 @@ failure or missing final marker is not a pass.
 6. boot `linux-hardened` twice;
 7. verify LUKS2, Btrfs mounts, `+C`, fstab, crypttab, keyfile mode, networking and
    the stage-2 contract;
-8. run the exact selected `privatestack-ansible` host campaign;
+8. run the exact selected `hyperlab-ansible` host campaign;
 9. record sanitized scalar evidence through the hardware runner.
 
 The Nitro PCIe power-management workaround remains part of the managed VFIO
@@ -87,15 +87,16 @@ bind:
 
 ```text
 exact arch-bootstrap commit
-exact privatestack-ansible commit
+exact hyperlab-ansible commit
 disposable two-disk proof
 Nitro ordered gate result
 Predator ordered gate result
 sanitized publication hash
 ```
 
-A runtime change may be committed directly to `main` only after its required
-software and hardware gates pass. Documentation-only changes may be committed
-after software verification when they do not alter installation or runtime
-behavior. Any runtime fix changes the frozen identity and requires the affected
-hardware sequence to be repeated.
+A runtime candidate may be committed locally on `main` after software verification
+so the hardware campaign can bind an exact clean commit. Push that commit to remote
+`main` only after its required hardware gates pass. Documentation-only changes may
+be published after software verification when they do not alter installation or
+runtime behavior. Any runtime fix changes the frozen identity and reopens the
+affected hardware sequence.

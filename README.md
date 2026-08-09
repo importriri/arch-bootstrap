@@ -10,7 +10,7 @@ A minimal, test-driven Arch Linux bootstrap written in Bash.
 
 **The host it produces:** TTY only: no GPU driver, Bluetooth or desktop. Its
 first job is to fetch
-[`privatestack-ansible`](https://github.com/importriri/privatestack-ansible)
+[`hyperlab-ansible`](https://github.com/importriri/hyperlab-ansible)
 and become the hypervisor lab. `iwd`, `systemd-networkd`,
 `systemd-resolved`, Git and Ansible are installed and enabled before hand-off.
 
@@ -132,10 +132,10 @@ iwctl station wlan0 connect "YOUR-SSID"
 ping -c1 archlinux.org
 
 # Fetch the stage-2 automation.
-git clone https://github.com/importriri/privatestack-ansible
+git clone https://github.com/importriri/hyperlab-ansible
 
 # Enter the repository root so every relative contract path resolves correctly.
-cd privatestack-ansible
+cd hyperlab-ansible
 
 # Install the exact Ansible collections declared by stage 2.
 ansible-galaxy collection install -r collections/requirements.yml
@@ -220,10 +220,14 @@ Interesting tooling failures are indexed under
 
 ## Project context
 
-`arch-bootstrap` builds the encrypted base host → `privatestack-ansible`
+`arch-bootstrap` builds the encrypted base host → `hyperlab-ansible`
 reconciles the hypervisor host and manages guest and service lifecycle →
 [`arch-hypervisor-lab`](https://github.com/importriri/arch-hypervisor-lab)
 records architecture and sanitized hardware evidence.
+
+## Author
+
+[importriri](https://github.com/importriri) is the author and maintainer.
 
 ## License
 

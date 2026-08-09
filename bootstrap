@@ -153,7 +153,7 @@ bootstrap_main() {
 	write_storage_contract "$topology" || return 1
 
 	trap - EXIT
-	echo "[OK] arch-bootstrap complete — storage is ready for privatestack-ansible" >&2
+	echo "[OK] arch-bootstrap complete — storage is ready for hyperlab-ansible" >&2
 }
 
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
