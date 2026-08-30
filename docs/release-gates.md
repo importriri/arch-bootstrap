@@ -94,9 +94,11 @@ Predator ordered gate result
 sanitized publication hash
 ```
 
-A runtime candidate may be committed locally on `main` after software verification
-so the hardware campaign can bind an exact clean commit. Push that commit to remote
-`main` only after its required hardware gates pass. Documentation-only changes may
-be published after software verification when they do not alter installation or
-runtime behavior. Any runtime fix changes the frozen identity and reopens the
-affected hardware sequence.
+Software-verified integration changes may be committed and pushed directly to
+`main`; that alone is not a hardware compatibility claim. A release campaign
+freezes an exact public `arch-bootstrap` commit together with an exact public
+`hyperlab-ansible` commit and binds all hardware evidence to that pair. Once the
+campaign is frozen, any runtime change creates a new commit identity and reopens
+the affected hardware sequence. Documentation-only updates may continue when they
+do not alter the frozen runtime behavior or the meaning of already-recorded
+evidence.
