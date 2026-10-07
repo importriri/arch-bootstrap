@@ -16,6 +16,8 @@ the check that now prevents a regression.
   loaded yet.
 - [`luks-passphrase-trailing-newline.md`](luks-passphrase-trailing-newline.md)
   explains the passphrase transport rule used by real LUKS2 tests.
+- [`verify-used-an-unlocked-sudo.md`](verify-used-an-unlocked-sudo.md)
+  records why the verifier runs as a normal user and never calls sudo.
 - [`testing-without-udev-or-device-mapper.md`](testing-without-udev-or-device-mapper.md)
   defines why the complete storage gate requires an Arch-capable VM instead of
   a restricted container.

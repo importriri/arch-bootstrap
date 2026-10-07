@@ -6,7 +6,7 @@
 #   3. the newline trap: a passphrase fed with a trailing newline must NOT
 #      authenticate against a header created without one (luksAddKey, no dm)
 #
-# usage:  sudo ./tests/luks-header-verify.sh
+# usage:  bash tests/luks-header-verify.sh   (no root: a sparse file in /tmp)
 set -uo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)

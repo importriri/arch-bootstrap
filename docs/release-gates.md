@@ -15,8 +15,10 @@ commits and sanitized hardware evidence.
 Hosted CI and local verification execute the same command:
 
 ```bash
-sudo bash verify.sh
+bash verify.sh
 ```
+
+It runs as a normal user and never calls sudo.
 
 It must pass Bash syntax, ShellCheck, all Bats contracts and real LUKS2 header
 inspection. The repository-proof gate runs this entrypoint from the exact checkout and

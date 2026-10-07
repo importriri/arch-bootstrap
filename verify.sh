@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Mirror hosted CI locally. The real LUKS header check needs root; everything
-# else stays host-independent and never touches a block device.
+# Mirror hosted CI locally, as a normal user: no step needs root or asks for
+# privilege. Nothing here touches a block device; the real LUKS header check
+# writes only a temporary file in /tmp.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -39,13 +40,6 @@ printf '%s\n' '== Bats contracts =='
 bats tests/*.bats
 
 printf '%s\n' '== Real LUKS2 header =='
-if (( EUID == 0 )); then
-	bash tests/luks-header-verify.sh
-elif command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
-	sudo bash tests/luks-header-verify.sh
-else
-	echo "real LUKS verification needs root; run sudo bash verify.sh" >&2
-	exit 2
-fi
+bash tests/luks-header-verify.sh
 
 printf '%s\n' 'arch-bootstrap verification: PASS'
