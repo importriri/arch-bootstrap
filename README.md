@@ -124,7 +124,10 @@ matching check, the one step a rehearsal can prove, is proven before a slow
 real format. It never uses the passphrase and writes nothing: the only
 external commands it runs are `sgdisk --pretend` and `cryptsetup --help`
 (plus `cryptsetup isLuks` on an existing partition), besides read-only
-probes such as `lsblk`, `findmnt` and `ping`. `sgdisk --pretend` cannot
+probes such as `lsblk`, `findmnt` and `ping`. At its exit, the installer
+and the wrapper unmount and close only what the same run mounted or opened,
+so a dry run unmounts and closes nothing, even on a host where an earlier
+installation is still mounted. `sgdisk --pretend` cannot
 simulate `--zap-all`, so on a disk that already holds a partition table
 the printed plan shows the old partitions, sgdisk ends with "Error
 encountered; not saving changes", and the dry run stops there with

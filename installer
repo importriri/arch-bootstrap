@@ -196,12 +196,38 @@ check_disk() {
 #============================================================================================
 # cleanup: the safety net ===================================================================
 # ===========================================================================================
+# what this run mounted or opened, set by the step that did it and only in a
+# real run: cleanup undoes this run's own work and nothing else, so a dry run
+# (or a run that stopped before opening anything) leaves a mounted or opened
+# system exactly as it found it. INSTALLER_OWNED_FILE, when set by the
+# bootstrap wrapper, receives the same names so the wrapper can adopt them.
+OWNED_MOUNT=0
+OWNED_ROOT_MAPPER=0
+OWNED_VM_MAPPER=0
+
+own() {
+	case "$1" in
+		MOUNT|ROOT_MAPPER|VM_MAPPER) printf -v "OWNED_$1" '%s' 1 ;;
+		*) echo "Internal error: unknown owned resource $1" >&2; return 1 ;;
+	esac
+	if [[ -n ${INSTALLER_OWNED_FILE:-} ]]; then
+		echo "$1" >> "$INSTALLER_OWNED_FILE"
+	fi
+}
+
 cleanup() {
-	#unmount filesystem
-	umount -R "$MOUNT_ROOT" 2>/dev/null || true
-	#closing the disks (reverse of open order: vm first, then root)
-	cryptsetup close "$VM_LUKS_NAME" 2>/dev/null || true
-	cryptsetup close "$LUKS_NAME" 2>/dev/null || true
+	#unmount only what this run mounted
+	if (( OWNED_MOUNT )); then
+		umount -R "$MOUNT_ROOT" 2>/dev/null || true
+	fi
+	#closing the disks this run opened (reverse of open order: vm first, then root)
+	if (( OWNED_VM_MAPPER )); then
+		cryptsetup close "$VM_LUKS_NAME" 2>/dev/null || true
+	fi
+	if (( OWNED_ROOT_MAPPER )); then
+		cryptsetup close "$LUKS_NAME" 2>/dev/null || true
+	fi
+	return 0
 }
 
 # ===========================================================================================
@@ -410,6 +436,7 @@ encrypt_root() {
 	echo "Opening $part as $LUKS_NAME ..." >&2
 	printf '%s' "$passphrase" | cryptsetup open --key-file - "$part" "$LUKS_NAME" \
 		|| { echo "luksOpen failed on $part" >&2; return 1; }
+	own ROOT_MAPPER
 
 	#the mapper node is the contract handed to the btrfs phase
 	if [[ ! -e $LUKS_MAPPER ]]; then
@@ -523,6 +550,7 @@ create_subvolumes() {
 	mkdir -p "$BTRFS_TOP" || { echo "mkdir $BTRFS_TOP failed" >&2; return 1; }
 	mount -o subvolid=5 "$LUKS_MAPPER" "$BTRFS_TOP" \
 		|| { echo "mount of btrfs top-level failed" >&2; return 1; }
+	own MOUNT
 
 	local record subvol rest
 	for record in "${SUBVOL_LAYOUT[@]}"; do
@@ -576,11 +604,13 @@ mount_layout() {
 		if [[ $extra == "nocow" ]]; then
 			mount -o "noatime,subvol=$subvol" "$LUKS_MAPPER" "$target" \
 				|| { echo "mount of $subvol failed" >&2; return 1; }
+			own MOUNT
 			chattr +C "$target" \
 				|| { echo "chattr +C failed on $target" >&2; return 1; }
 		else
 			mount -o "$BTRFS_OPTS,subvol=$subvol" "$LUKS_MAPPER" "$target" \
 				|| { echo "mount of $subvol failed" >&2; return 1; }
+			own MOUNT
 		fi
 	done
 
@@ -589,6 +619,7 @@ mount_layout() {
 	mkdir -p "$MOUNT_ROOT/boot" || { echo "mkdir /boot failed" >&2; return 1; }
 	mount "$ESP_PART" "$MOUNT_ROOT/boot" \
 		|| { echo "mount of ESP at /boot failed" >&2; return 1; }
+	own MOUNT
 
 	echo "[OK] layout mounted under $MOUNT_ROOT" >&2
 	return 0
@@ -913,6 +944,7 @@ encrypt_vm_disk() {
 		|| { echo "luksFormat (vm) failed" >&2; return 1; }
 	cryptsetup open --key-file "$MOUNT_ROOT$VM_KEYFILE" "$VM_PART" "$VM_LUKS_NAME" \
 		|| { echo "luksOpen (vm) failed" >&2; return 1; }
+	own VM_MAPPER
 
 	#crypttab: unlocked after root, by keyfile. the UUID form is stable.
 	local vm_uuid
@@ -932,6 +964,7 @@ encrypt_vm_disk() {
 	umount "$target" 2>/dev/null || true   #mounted by mount_layout; absent on reruns
 	mount -o noatime "$VM_LUKS_MAPPER" "$target" \
 		|| { echo "mount of $VM_LUKS_MAPPER at $target failed" >&2; return 1; }
+	own MOUNT
 	# The mounted filesystem root is still empty, so this is the one safe time
 	# to establish the No_COW inheritance contract for every VM image below it.
 	chattr +C "$target" \

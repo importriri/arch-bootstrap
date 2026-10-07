@@ -138,7 +138,23 @@ EOF
 }
 
 bootstrap_main() {
-	bash "$BOOTSTRAP_DIR/installer" "$@" || return 1
+	# A real run leaves the target mounted and opened for the checks below;
+	# the installer names what it mounted or opened, and only that becomes
+	# this wrapper's to clean up. A dry run owns nothing.
+	if (( DRY_RUN )); then
+		bash "$BOOTSTRAP_DIR/installer" "$@" || return 1
+	else
+		local owned_file what
+		local -a owned=()
+		owned_file=$(mktemp) || { echo "Could not create the owned-resources file" >&2; return 1; }
+		INSTALLER_OWNED_FILE="$owned_file" bash "$BOOTSTRAP_DIR/installer" "$@" \
+			|| { rm -f -- "$owned_file"; return 1; }
+		mapfile -t owned < "$owned_file"
+		rm -f -- "$owned_file"
+		for what in "${owned[@]}"; do
+			own "$what" || return 1
+		done
+	fi
 
 	if (( DRY_RUN )); then
 		echo "[DRY-RUN] real installation would verify the selected VM-store mapper/fsroot/+C" >&2

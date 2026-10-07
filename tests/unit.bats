@@ -275,6 +275,27 @@ source_sandbox() {
 	[ -z "$output" ]
 }
 
+@test "cleanup undoes only what this run mounted or opened" {
+	source_real
+	#nothing owned: no umount, no close, even with a system mounted elsewhere
+	cleanup
+	[ ! -s "$STUB_LOG" ]
+	#a real run that opened the root mapper and mounted the layout, but never
+	#opened the VM container: those two are undone, cryptvm is left alone
+	own ROOT_MAPPER
+	own MOUNT
+	cleanup
+	grep -qx 'umount -R /mnt' "$STUB_LOG"
+	grep -qx 'cryptsetup close cryptroot' "$STUB_LOG"
+	run grep -c 'cryptvm' "$STUB_LOG"
+	[ "$output" = "0" ]
+	#the wrapper learns the same names through INSTALLER_OWNED_FILE
+	INSTALLER_OWNED_FILE="$BATS_TEST_TMPDIR/owned" own VM_MAPPER
+	[ "$(cat "$BATS_TEST_TMPDIR/owned")" = "VM_MAPPER" ]
+	run own SOMETHING_ELSE
+	[ "$status" -eq 1 ]
+}
+
 # ---- confirm_wipe (the destruction gate) -------------------------------------
 
 @test "confirm_wipe accepts the exact path" {

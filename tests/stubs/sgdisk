@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/_stub_lib.sh"
 _log "$@"
-exit 0
+# STUB_SGDISK_RC simulates sgdisk failing, e.g. 4 for "Error encountered;
+# not saving changes" on a disk whose table --pretend cannot zap.
+exit "${STUB_SGDISK_RC:-0}"

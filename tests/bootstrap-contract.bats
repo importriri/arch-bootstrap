@@ -189,3 +189,53 @@ setup() {
 	run grep -F "acquire + confirm the passphrase in the dry-run too" "$REPO/installer"
 	[ "$status" -eq 0 ]
 }
+
+# Run the whole entrypoint, as an operator would, in dry run: real bootstrap
+# and installer, the logging stubs for every external tool, a lsblk that
+# shows one disk, and only the root and UEFI guards neutralized in a copy.
+_dry_run_bootstrap() {
+	local box="$BATS_TEST_TMPDIR/box"
+	mkdir -p "$box/bin"
+	sed -e 's/^check_root() {$/check_root() { echo "[TEST] root guard skipped" >\&2; return 0; }\n_real_check_root() {/' \
+	    -e 's/^check_uefi() {$/check_uefi() { echo "[TEST] UEFI guard skipped" >\&2; return 0; }\n_real_check_uefi() {/' \
+	    "$REPO/installer" > "$box/installer"
+	cp "$REPO/bootstrap" "$box/bootstrap"
+	grep -q 'root guard skipped' "$box/installer"
+	grep -q 'UEFI guard skipped' "$box/installer"
+	cat > "$box/bin/lsblk" <<'STUB'
+#!/usr/bin/env bash
+source "$STUB_DIR/_stub_lib.sh"
+_log "$@"
+[[ "$*" == "-dnpo NAME,SIZE,TYPE" ]] && echo "/dev/vdz 80G disk"
+exit 0
+STUB
+	chmod +x "$box/bin/lsblk"
+	export STUB_LOG="$BATS_TEST_TMPDIR/stub.log" STUB_DIR="$REPO/tests/stubs"
+	: > "$STUB_LOG"
+	# disk 1, the path typed back, the passphrase twice; the second-disk
+	# menu finds no other disk and asks nothing.
+	run env PATH="$box/bin:$REPO/tests/stubs:$PATH" DRY_RUN=1 "$@" bash -c \
+		"printf '1\n/dev/vdz\npw12345678\npw12345678\n' | bash '$box/bootstrap'"
+}
+
+@test "a dry run of the whole entrypoint changes nothing, at its exit either" {
+	#problems/dry-run-asks-for-luks-passphrase.md
+	_dry_run_bootstrap
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"[DRY-RUN] real installation would write"* ]]
+	grep -q '^sgdisk --pretend ' "$STUB_LOG"
+	run grep -Ev '^(ping |lsblk |findmnt |sgdisk --pretend |cryptsetup --help$|cryptsetup isLuks )' "$STUB_LOG"
+	[ "$status" -eq 1 ]
+	[ -z "$output" ]
+}
+
+@test "a dry run stopped by sgdisk (pretend) failed changes nothing either" {
+	#problems/dry-run-asks-for-luks-passphrase.md
+	_dry_run_bootstrap STUB_SGDISK_RC=4
+	[ "$status" -ne 0 ]
+	[[ "$output" == *"sgdisk (pretend) failed"* ]]
+	grep -q '^sgdisk --pretend ' "$STUB_LOG"
+	run grep -Ev '^(ping |lsblk |findmnt |sgdisk --pretend |cryptsetup --help$|cryptsetup isLuks )' "$STUB_LOG"
+	[ "$status" -eq 1 ]
+	[ -z "$output" ]
+}
