@@ -165,19 +165,13 @@ setup() {
 	#problems/verify-used-an-unlocked-sudo.md
 	run grep -nE '\bsudo\b' "$REPO/verify.sh" "$REPO/tests/luks-header-verify.sh"
 	[ "$status" -eq 1 ]
-	run grep -nE '^[[:space:]]*run:.*\bsudo bash verify' "$REPO/.github/workflows/ci.yml"
+	#any CI step that runs the verifier through sudo, in any spelling
+	run grep -nE '^[[:space:]]*(-[[:space:]]*)?run:.*\bsudo\b.*verify\.sh' "$REPO/.github/workflows/ci.yml"
 	[ "$status" -eq 1 ]
+	run grep -nE '^[[:space:]]*(-[[:space:]]*)?run:[[:space:]]*bash verify\.sh[[:space:]]*$' "$REPO/.github/workflows/ci.yml"
+	[ "$status" -eq 0 ]
 	run grep -nE '^bash tests/luks-header-verify\.sh$' "$REPO/verify.sh"
 	[ "$status" -eq 0 ]
-	#the LUKS step itself, with an unlocked fake sudo first on PATH: it must
-	#pass without it and leave it untouched
-	mkdir -p "$BATS_TEST_TMPDIR/bin"
-	printf '#!/bin/sh\ntouch "%s/sudo-was-called"\nexit 0\n' "$BATS_TEST_TMPDIR" > "$BATS_TEST_TMPDIR/bin/sudo"
-	chmod +x "$BATS_TEST_TMPDIR/bin/sudo"
-	PATH="$BATS_TEST_TMPDIR/bin:$PATH" run bash "$REPO/tests/luks-header-verify.sh"
-	[ "$status" -eq 0 ]
-	[[ "$output" == *"ALL LUKS VERIFICATIONS PASSED"* ]]
-	[ ! -e "$BATS_TEST_TMPDIR/sudo-was-called" ]
 }
 
 @test "the README says the dry run asks for the LUKS passphrase and never uses it" {

@@ -34,7 +34,11 @@ after the next push.
 
 ## Test
 
-`tests/bootstrap-contract.bats` refuses any `sudo` in `verify.sh` and the
-LUKS step and a `sudo bash verify.sh` in CI, and runs the LUKS step with an
-unlocked fake `sudo` first on `PATH`: it must pass and leave the fake
-untouched. It fails on the previous `verify.sh`.
+`tests/bootstrap-contract.bats` refuses any `sudo` in `verify.sh` and in
+the LUKS step, and any CI step that runs `verify.sh` through sudo in any
+spelling (`sudo bash verify.sh`, `sudo -E bash verify.sh`, `sudo
+./verify.sh`); it requires CI to run `bash verify.sh` and the verifier to
+run the LUKS step directly. It fails on the previous `verify.sh`. An
+earlier version also ran the LUKS step with a fake `sudo` first on `PATH`;
+that part could not fail, because the step never called sudo, and was
+removed.

@@ -119,7 +119,8 @@ sudo env DRY_RUN=0 bash bootstrap
 ```
 
 The dry run is interactive too. It asks which disk to use, for the disk
-path typed back, and for the root LUKS passphrase twice, so that the
+path typed back, for the root LUKS passphrase twice and, when another disk
+exists, whether to dedicate it to VM storage, so that the
 matching check, the one step a rehearsal can prove, is proven before a slow
 real format. It never uses the passphrase and writes nothing: the only
 external commands it runs are `sgdisk --pretend` and `cryptsetup --help`
@@ -134,10 +135,19 @@ encountered; not saving changes", and the dry run stops there with
 "sgdisk (pretend) failed" and a non-zero exit; on a blank disk it shows the
 new layout.
 
-The real run asks again for the root LUKS passphrase, then for the root
-password and optionally a second destructive disk confirmation. Secure Boot
-key enrollment remains a manual firmware step after the generated assets
-are reviewed.
+The real run asks, in this order (`main` in `installer`):
+
+1. the target disk (`check_disk`);
+2. the disk path typed back (`confirm_wipe`);
+3. the root LUKS passphrase, twice (`encrypt_root`);
+4. when another disk exists, whether to dedicate it to VM storage
+   (`check_disk` again, `0` skips), and for a chosen disk its path typed
+   back (`confirm_wipe`);
+5. the root password of the new system, twice (`passwd` in
+   `configure_system`).
+
+The dry run asks 1 to 4 and only announces 5. Secure Boot key enrollment
+remains a manual firmware step after the generated assets are reviewed.
 
 ## First boot
 
