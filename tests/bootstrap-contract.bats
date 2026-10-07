@@ -179,3 +179,13 @@ setup() {
 	[[ "$output" == *"ALL LUKS VERIFICATIONS PASSED"* ]]
 	[ ! -e "$BATS_TEST_TMPDIR/sudo-was-called" ]
 }
+
+@test "the README says the dry run asks for the LUKS passphrase and never uses it" {
+	#problems/dry-run-asks-for-luks-passphrase.md
+	run grep -F "for the root LUKS passphrase twice" "$REPO/README.md"
+	[ "$status" -eq 0 ]
+	run grep -F "It never uses the passphrase and writes nothing" "$REPO/README.md"
+	[ "$status" -eq 0 ]
+	run grep -F "acquire + confirm the passphrase in the dry-run too" "$REPO/installer"
+	[ "$status" -eq 0 ]
+}

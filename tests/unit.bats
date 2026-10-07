@@ -253,6 +253,28 @@ source_sandbox() {
 	[[ "$output" == *"enroll-keys"* ]]
 }
 
+@test "a full dry run reaches no tool but sgdisk --pretend and cryptsetup's probes" {
+	source_real
+	#problems/dry-run-asks-for-luks-passphrase.md: the dry run reads the
+	#passphrase on purpose; this pins down that it does nothing else with it.
+	run bash -c "printf 'pw12345678\npw12345678\n' | {
+		export DRY_RUN=1; source '$INSTALLER'
+		partition_disk /dev/vdz && encrypt_root '/no/such/part' && make_filesystems \
+		&& create_subvolumes && mount_layout && pacstrap_base && generate_fstab \
+		&& configure_system && install_bootloader && configure_zram \
+		&& setup_secureboot && encrypt_vm_disk '/no/such/disk'
+	}"
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"passphrase acquired and confirmed (10 chars), not used"* ]]
+	[[ "$output" != *"pw12345678"* ]]
+	#observe the target first, so the negative check below cannot pass empty
+	grep -q '^sgdisk --pretend --zap-all ' "$STUB_LOG"
+	grep -q '^cryptsetup --help$' "$STUB_LOG"
+	run grep -Ev '^(sgdisk --pretend |cryptsetup --help$|cryptsetup isLuks )' "$STUB_LOG"
+	[ "$status" -eq 1 ]
+	[ -z "$output" ]
+}
+
 # ---- confirm_wipe (the destruction gate) -------------------------------------
 
 @test "confirm_wipe accepts the exact path" {

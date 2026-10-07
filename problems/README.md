@@ -11,6 +11,8 @@ the check that now prevents a regression.
   records the portable Argon2 capability probe used by the storage path.
 - [`bats-negative-assertion-that-asserted-nothing.md`](bats-negative-assertion-that-asserted-nothing.md)
   documents a negative test that once passed without observing its target.
+- [`dry-run-asks-for-luks-passphrase.md`](dry-run-asks-for-luks-passphrase.md)
+  records why the dry run asks for the LUKS passphrase and what it runs.
 - [`losetup-loop-module-not-loaded.md`](losetup-loop-module-not-loaded.md)
   covers disposable storage tests on systems where the loop module is not
   loaded yet.

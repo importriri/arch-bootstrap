@@ -118,9 +118,23 @@ sudo bash bootstrap
 sudo env DRY_RUN=0 bash bootstrap
 ```
 
-The real run asks for the root LUKS passphrase, root password and optionally a
-second destructive disk confirmation. Secure Boot key enrollment remains a
-manual firmware step after the generated assets are reviewed.
+The dry run is interactive too. It asks which disk to use, for the disk
+path typed back, and for the root LUKS passphrase twice, so that the
+matching check, the one step a rehearsal can prove, is proven before a slow
+real format. It never uses the passphrase and writes nothing: the only
+external commands it runs are `sgdisk --pretend` and `cryptsetup --help`
+(plus `cryptsetup isLuks` on an existing partition), besides read-only
+probes such as `lsblk`, `findmnt` and `ping`. `sgdisk --pretend` cannot
+simulate `--zap-all`, so on a disk that already holds a partition table
+the printed plan shows the old partitions, sgdisk ends with "Error
+encountered; not saving changes", and the dry run stops there with
+"sgdisk (pretend) failed" and a non-zero exit; on a blank disk it shows the
+new layout.
+
+The real run asks again for the root LUKS passphrase, then for the root
+password and optionally a second destructive disk confirmation. Secure Boot
+key enrollment remains a manual firmware step after the generated assets
+are reviewed.
 
 ## First boot
 
@@ -167,8 +181,9 @@ destroy private workload state.
 Hosted CI and local verification use the same entrypoint:
 
 ```bash
-# Run syntax, lint, Bats and real sparse-file LUKS2 verification.
-sudo bash verify.sh
+# Run syntax, lint, Bats and real sparse-file LUKS2 verification, as a
+# normal user: nothing in it needs root or calls sudo.
+bash verify.sh
 ```
 
 That command discovers every shipped shell path and runs Bash syntax,
