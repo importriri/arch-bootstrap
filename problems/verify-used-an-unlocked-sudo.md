@@ -35,10 +35,12 @@ after the next push.
 ## Test
 
 `tests/bootstrap-contract.bats` refuses any `sudo` in `verify.sh` and in
-the LUKS step, and any CI step that runs `verify.sh` through sudo in any
-spelling (`sudo bash verify.sh`, `sudo -E bash verify.sh`, `sudo
-./verify.sh`); it requires CI to run `bash verify.sh` and the verifier to
-run the LUKS step directly. It fails on the previous `verify.sh`. An
-earlier version also ran the LUKS step with a fake `sudo` first on `PATH`;
-that part could not fail, because the step never called sudo, and was
-removed.
+the LUKS step, and any line of the CI workflow that names sudo other than
+the toolchain install (`apt-get`): that covers a `run:` line, a `run: |`
+block and a `shell:` key alike. It requires CI to run `bash verify.sh` and
+the verifier to run the LUKS step directly. It fails on the previous
+`verify.sh`. It also runs the LUKS step with an unlocked fake `sudo` first
+on `PATH`: the step must pass and leave the fake untouched, which catches a
+sudo reached through a helper or a sourced file that the grep on two files
+cannot see. A version of the CI check that read only one-line `run:` keys
+let a `run: |` block and a `shell: sudo …` key through; it was replaced.

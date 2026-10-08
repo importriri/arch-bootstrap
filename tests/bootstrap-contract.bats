@@ -165,13 +165,28 @@ setup() {
 	#problems/verify-used-an-unlocked-sudo.md
 	run grep -nE '\bsudo\b' "$REPO/verify.sh" "$REPO/tests/luks-header-verify.sh"
 	[ "$status" -eq 1 ]
-	#any CI step that runs the verifier through sudo, in any spelling
-	run grep -nE '^[[:space:]]*(-[[:space:]]*)?run:.*\bsudo\b.*verify\.sh' "$REPO/.github/workflows/ci.yml"
+	#in CI, sudo may only install the toolchain: whatever the key (run:,
+	#shell:) and whatever the layout (one line or a run: | block), no other
+	#line may name it
+	run grep -nE '\bsudo\b' "$REPO/.github/workflows/ci.yml"
+	[ "$status" -eq 0 ]
+	run bash -c "grep -nE '\bsudo\b' '$REPO/.github/workflows/ci.yml' | grep -v 'apt-get'"
 	[ "$status" -eq 1 ]
+	[ -z "$output" ]
 	run grep -nE '^[[:space:]]*(-[[:space:]]*)?run:[[:space:]]*bash verify\.sh[[:space:]]*$' "$REPO/.github/workflows/ci.yml"
 	[ "$status" -eq 0 ]
 	run grep -nE '^bash tests/luks-header-verify\.sh$' "$REPO/verify.sh"
 	[ "$status" -eq 0 ]
+	#the grep above reads two files; a sudo reached through a helper or a
+	#sourced file is caught here instead: the LUKS step runs with an unlocked
+	#fake sudo first on PATH, must pass, and must leave it untouched
+	mkdir -p "$BATS_TEST_TMPDIR/bin"
+	printf '#!/bin/sh\ntouch "%s/sudo-was-called"\nexit 0\n' "$BATS_TEST_TMPDIR" > "$BATS_TEST_TMPDIR/bin/sudo"
+	chmod +x "$BATS_TEST_TMPDIR/bin/sudo"
+	PATH="$BATS_TEST_TMPDIR/bin:$PATH" run bash "$REPO/tests/luks-header-verify.sh"
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"ALL LUKS VERIFICATIONS PASSED"* ]]
+	[ ! -e "$BATS_TEST_TMPDIR/sudo-was-called" ]
 }
 
 @test "the README says the dry run asks for the LUKS passphrase and never uses it" {
