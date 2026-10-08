@@ -142,12 +142,10 @@ EOF
 # checks below. The installer refused to start if any of them was already in
 # use, so all of them are this run's, and this wrapper's to release on failure.
 adopt_installer_work() {
-	local record mount
-	for record in "${SUBVOL_LAYOUT[@]}"; do
-		IFS='|' read -r _ mount _ <<< "$record"
-		own_mount "$MOUNT_ROOT$mount"
-	done
-	own_mount "$MOUNT_ROOT/boot"
+	local point
+	while IFS= read -r point; do
+		own_mount "$point"
+	done < <(layout_mount_points)
 	own_mapper ROOT
 	if [[ -e $VM_LUKS_MAPPER ]]; then
 		own_mapper VM

@@ -283,7 +283,7 @@ source_sandbox() {
 	#only the btrfs top level was mounted: that is what is released, never /mnt
 	own_mount /mnt/.btrfs-top
 	cleanup
-	[ "$(cat "$STUB_LOG")" = "umount /mnt/.btrfs-top" ]
+	[ "$(cat "$STUB_LOG")" = "umount -R /mnt/.btrfs-top" ]
 	#a layout and the root mapper: newest mount first, then the mapper
 	: > "$STUB_LOG"
 	OWNED_MOUNTS=()
@@ -292,7 +292,9 @@ source_sandbox() {
 	own_mount /mnt/boot
 	own_mapper ROOT
 	cleanup
-	[ "$(cat "$STUB_LOG")" = "$(printf 'umount /mnt/boot\numount /mnt/home\numount /mnt/\ncryptsetup close cryptroot')" ]
+	#each recorded point recursively, so a mount left under it (an interrupted
+	#arch-chroot's /proc, /sys, /dev) cannot keep it busy
+	[ "$(cat "$STUB_LOG")" = "$(printf 'umount -R /mnt/boot\numount -R /mnt/home\numount -R /mnt/\ncryptsetup close cryptroot')" ]
 	#a step that released its own mount takes it off the list
 	: > "$STUB_LOG"
 	OWNED_MOUNTS=()
@@ -310,9 +312,44 @@ source_sandbox() {
 	own_mount /mnt/
 	own_mapper ROOT
 	STUB_UMOUNT_RC=32 STUB_CLOSE_RC=5 run cleanup
-	[[ "$output" == *"[CLEANUP-FAIL] umount /mnt/"* ]]
+	[[ "$output" == *"[CLEANUP-FAIL] umount -R /mnt/"* ]]
 	[[ "$output" == *"[CLEANUP-FAIL] cryptsetup close cryptroot"* ]]
 	[[ "$output" == *"still mounted or open"* ]]
+}
+
+@test "encrypt_vm_disk refuses to mount cryptvm over a root-side @vm it could not release" {
+	source_sandbox
+	local sb="$BATS_TEST_TMPDIR"
+	touch "$sb/dev/ARCH_VM"
+	mkdir -p "$sb/mnt/etc"
+	printf 'UUID=root-fs-uuid /var/lib/libvirt/images btrfs rw,noatime 0 0\n' > "$sb/mnt/etc/fstab"
+	STUB_UMOUNT_RC=32 run encrypt_vm_disk "$sb/dev/seconddisk"
+	[ "$status" -ne 0 ]
+	[[ "$output" == *"refusing to mount"* ]]
+	run grep -c '^mount -o noatime ' "$STUB_LOG"
+	[ "$output" = "0" ]
+}
+
+@test "the layout's mount points are listed once, and mount_layout records exactly them" {
+	local sb="$BATS_TEST_TMPDIR"
+	mkdir -p "$sb/dev" "$sb/mnt" "$sb/mapper"
+	sed -e "s|/dev/disk/by-partlabel|$sb/dev|g" \
+	    -e "s|\"/mnt\"|\"$sb/mnt\"|g" \
+	    -e "s|\"/mnt/.btrfs-top\"|\"$sb/mnt/.btrfs-top\"|g" \
+	    -e "s|/dev/mapper/|$sb/mapper/|g" \
+	    "$INSTALLER" > "$sb/installer.layout"
+	: > "$sb/mapper/cryptroot"
+	export DRY_RUN=0
+	# shellcheck source=/dev/null
+	source "$sb/installer.layout"
+	run layout_mount_points
+	[ "$status" -eq 0 ]
+	[ "${lines[0]}" = "$sb/mnt/" ]
+	[ "${lines[-1]}" = "$sb/mnt/boot" ]
+	local expected
+	expected=$(layout_mount_points)
+	mount_layout
+	[ "$(printf '%s\n' "${OWNED_MOUNTS[@]}")" = "$expected" ]
 }
 
 # ---- confirm_wipe (the destruction gate) -------------------------------------

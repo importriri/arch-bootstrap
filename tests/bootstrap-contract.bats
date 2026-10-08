@@ -214,13 +214,16 @@ _dry_run_bootstrap() {
 	grep -q 'root guard skipped' "$box/installer"
 	grep -q 'UEFI guard skipped' "$box/installer"
 	grep -q "$box/mapper/" "$box/installer"
-	#findmnt lists no mount under /mnt unless a test sets STUB_MOUNTS
+	#findmnt lists / and, when a test sets STUB_MOUNTS, those targets; with
+	#STUB_FINDMNT_FAIL it fails as a broken findmnt would
 	cat > "$box/bin/findmnt" <<'STUB'
 #!/usr/bin/env bash
 source "$STUB_DIR/_stub_lib.sh"
 _log "$@"
-if [[ "$*" == "-rno TARGET" && -n ${STUB_MOUNTS:-} ]]; then
-	printf '%s\n' $STUB_MOUNTS
+if [[ "$*" == "-rno TARGET" ]]; then
+	[[ -n ${STUB_FINDMNT_FAIL:-} ]] && { echo "findmnt: cannot read mountinfo" >&2; exit 1; }
+	printf '/\n'
+	[[ -n ${STUB_MOUNTS:-} ]] && printf '%s\n' $STUB_MOUNTS
 	exit 0
 fi
 exit 1
@@ -311,4 +314,22 @@ STUB
 	: > "$box/mapper/cryptvm"
 	run bash -c "source '$box/bootstrap'; adopt_installer_work; echo vm=\$OWNED_VM_MAPPER"
 	[ "${lines[-1]}" = "vm=1" ]
+}
+
+@test "the refusal names the mounts actually left, not a /mnt that is not mounted" {
+	_dry_run_bootstrap STUB_MOUNTS="/mnt/.btrfs-top /mnt/boot"
+	[ "$status" -ne 0 ]
+	[[ "$output" == *"umount -R /mnt/.btrfs-top"* ]]
+	[[ "$output" == *"umount -R /mnt/boot"* ]]
+	[[ "$output" != *"umount -R /mnt"$'\n'* ]]
+	run grep -c '^sgdisk ' "$STUB_LOG"
+	[ "$output" = "0" ]
+}
+
+@test "a run refuses to start when the mounts cannot be listed" {
+	_dry_run_bootstrap STUB_FINDMNT_FAIL=1
+	[ "$status" -ne 0 ]
+	[[ "$output" == *"could not list the mounts"* ]]
+	run grep -c '^sgdisk ' "$STUB_LOG"
+	[ "$output" = "0" ]
 }

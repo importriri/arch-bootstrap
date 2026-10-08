@@ -232,9 +232,11 @@ cleanup() {
 	local i err left=()
 	#newest mount first, each one this run recorded
 	for (( i = ${#OWNED_MOUNTS[@]} - 1; i >= 0; i-- )); do
-		if ! err=$(umount "${OWNED_MOUNTS[i]}" 2>&1); then
-			echo "[CLEANUP-FAIL] umount ${OWNED_MOUNTS[i]}: ${err:-failed}" >&2
-			left+=("umount ${OWNED_MOUNTS[i]}")
+		#recursively: a mount left under a recorded point (an interrupted
+		#arch-chroot's /proc, /sys, /dev) must not keep it busy
+		if ! err=$(umount -R "${OWNED_MOUNTS[i]}" 2>&1); then
+			echo "[CLEANUP-FAIL] umount -R ${OWNED_MOUNTS[i]}: ${err:-failed}" >&2
+			left+=("umount -R ${OWNED_MOUNTS[i]}")
 		fi
 	done
 	#then the mappers this run opened, vm first, then root
@@ -254,6 +256,18 @@ cleanup() {
 	return 0
 }
 
+# layout_mount_points: every mount point a successful real run leaves for the
+# wrapper, in the order mount_layout mounts them. The one list both
+# mount_layout and the wrapper's adoption use.
+layout_mount_points() {
+	local record mount
+	for record in "${SUBVOL_LAYOUT[@]}"; do
+		IFS='|' read -r _ mount _ <<< "$record"
+		printf '%s\n' "$MOUNT_ROOT$mount"
+	done
+	printf '%s\n' "$MOUNT_ROOT/boot"
+}
+
 # ===========================================================================================
 # refuse_busy_target: never start over an earlier run's leftovers ===========================
 # ===========================================================================================
@@ -262,13 +276,24 @@ cleanup() {
 # (luksOpen "already exists") or, worse, write into it. Refuse up front, in the
 # dry run too, and name the exact commands that release it.
 refuse_busy_target() {
-	local busy=() target
+	local busy=() mounts target top under=()
+	#never read a failure as "nothing mounted": a run that cannot see the
+	#mounts cannot know it is not starting over an earlier run's
+	if ! mounts=$(findmnt -rno TARGET); then
+		echo "Refusing to start: could not list the mounts (findmnt failed)" >&2
+		return 1
+	fi
 	while IFS= read -r target; do
-		if [[ $target == "$MOUNT_ROOT" || $target == "$MOUNT_ROOT"/* ]]; then
-			busy+=("umount -R $MOUNT_ROOT")
-			break
-		fi
-	done < <(findmnt -rno TARGET 2>/dev/null)
+		[[ $target == "$MOUNT_ROOT" || $target == "$MOUNT_ROOT"/* ]] && under+=("$target")
+	done <<< "$mounts"
+	#name each topmost leftover: /mnt itself when it is mounted, otherwise
+	#each mount under it whose parent is not one of them
+	for target in "${under[@]}"; do
+		for top in "${under[@]}"; do
+			[[ $top != "$target" && $target == "$top"/* ]] && continue 2
+		done
+		busy+=("umount -R $target")
+	done
 	[[ -e $VM_LUKS_MAPPER ]] && busy+=("cryptsetup close $VM_LUKS_NAME")
 	[[ -e $LUKS_MAPPER ]] && busy+=("cryptsetup close $LUKS_NAME")
 	(( ${#busy[@]} == 0 )) && return 0
@@ -675,6 +700,12 @@ mount_layout() {
 		|| { echo "mount of ESP at /boot failed" >&2; return 1; }
 	own_mount "$MOUNT_ROOT/boot"
 
+	#the wrapper adopts these same points from layout_mount_points
+	if [[ "$(printf '%s\n' "${OWNED_MOUNTS[@]}")" != "$(layout_mount_points)" ]]; then
+		echo "Internal error: mount_layout and layout_mount_points disagree" >&2
+		return 1
+	fi
+
 	echo "[OK] layout mounted under $MOUNT_ROOT" >&2
 	return 0
 }
@@ -1015,7 +1046,12 @@ encrypt_vm_disk() {
 	#pointing the mountpoint at the root container — the second disk sits unused.
 	#the @vm subvol inside the root container stays behind, empty and unmounted.
 	local target="$MOUNT_ROOT$vm_mount"
-	umount "$target" 2>/dev/null && disown_mount "$target"   #mounted by mount_layout
+	#mounted by mount_layout in this run (a run refuses to start over a busy
+	#/mnt): if it cannot be released, cryptvm must not be stacked over it
+	umount "$target" \
+		|| { echo "umount of the root-side @vm at $target failed; refusing to mount cryptvm over it" >&2
+		     return 1; }
+	disown_mount "$target"
 	mount -o noatime "$VM_LUKS_MAPPER" "$target" \
 		|| { echo "mount of $VM_LUKS_MAPPER at $target failed" >&2; return 1; }
 	own_mount "$target"

@@ -91,3 +91,15 @@ hidden. `tests/unit.bats` checks newest-first unmounting of recorded
 points only and the reported failures; `tests/bootstrap-contract.bats`
 checks the refusal over a mounted `/mnt` and over an open mapper, in dry
 run, and the wrapper's adoption without a side channel.
+
+A third review closed four more gaps, each with a test that failed before:
+the refusal named `umount -R /mnt` even when only `/mnt/.btrfs-top` or
+`/mnt/boot` was left, a command that fails on an unmounted `/mnt`, and now
+names each topmost leftover; cleanup released each recorded point without
+`-R`, so a mount left under it (an interrupted `arch-chroot`'s `/proc`,
+`/sys`, `/dev`) kept it busy, and now uses `umount -R` on recorded points
+only; a failing `findmnt` read as "nothing mounted" and now refuses; and a
+root-side `@vm` that could not be released had `cryptvm` mounted over it in
+silence, which is now an error. The layout's mount points come from one
+function, `layout_mount_points`, that `mount_layout` checks itself against
+and the wrapper adopts.
