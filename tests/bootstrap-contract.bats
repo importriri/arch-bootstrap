@@ -165,12 +165,11 @@ setup() {
 	#problems/verify-used-an-unlocked-sudo.md
 	run grep -nE '\bsudo\b' "$REPO/verify.sh" "$REPO/tests/luks-header-verify.sh"
 	[ "$status" -eq 1 ]
-	#in CI, sudo may only install the toolchain: whatever the key (run:,
-	#shell:) and whatever the layout (one line or a run: | block), no other
-	#line may name it
-	run grep -nE '\bsudo\b' "$REPO/.github/workflows/ci.yml"
-	[ "$status" -eq 0 ]
-	run bash -c "grep -nE '\bsudo\b' '$REPO/.github/workflows/ci.yml' | grep -v 'apt-get'"
+	#in CI the only sudo allowed is `sudo apt-get` as a command of its own:
+	#with every `sudo apt-get` taken out, no sudo may remain anywhere, whatever
+	#the key (run:, shell:), the layout (one line or a run: | block) or what
+	#it follows (&&, ;)
+	run bash -c "sed -E 's/(^|[^[:alnum:]_-])sudo apt-get([[:space:]]|$)/\\1\\2/g' '$REPO/.github/workflows/ci.yml' | grep -nE '(^|[^[:alnum:]_-])sudo([^[:alnum:]_-]|$)'"
 	[ "$status" -eq 1 ]
 	[ -z "$output" ]
 	run grep -nE '^[[:space:]]*(-[[:space:]]*)?run:[[:space:]]*bash verify\.sh[[:space:]]*$' "$REPO/.github/workflows/ci.yml"
@@ -330,6 +329,18 @@ STUB
 	_dry_run_bootstrap STUB_FINDMNT_FAIL=1
 	[ "$status" -ne 0 ]
 	[[ "$output" == *"could not list the mounts"* ]]
+	run grep -c '^sgdisk ' "$STUB_LOG"
+	[ "$output" = "0" ]
+}
+
+@test "a run refuses to start over an open cryptroot" {
+	local box="$BATS_TEST_TMPDIR/box"
+	mkdir -p "$box/mapper"
+	: > "$box/mapper/cryptroot"
+	_dry_run_bootstrap
+	[ "$status" -ne 0 ]
+	[[ "$output" == *"a real run would refuse"* ]]
+	[[ "$output" == *"cryptsetup close cryptroot"* ]]
 	run grep -c '^sgdisk ' "$STUB_LOG"
 	[ "$output" = "0" ]
 }

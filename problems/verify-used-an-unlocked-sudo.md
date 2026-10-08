@@ -35,12 +35,21 @@ after the next push.
 ## Test
 
 `tests/bootstrap-contract.bats` refuses any `sudo` in `verify.sh` and in
-the LUKS step, and any line of the CI workflow that names sudo other than
-the toolchain install (`apt-get`): that covers a `run:` line, a `run: |`
-block and a `shell:` key alike. It requires CI to run `bash verify.sh` and
-the verifier to run the LUKS step directly. It fails on the previous
-`verify.sh`. It also runs the LUKS step with an unlocked fake `sudo` first
-on `PATH`: the step must pass and leave the fake untouched, which catches a
-sudo reached through a helper or a sourced file that the grep on two files
-cannot see. A version of the CI check that read only one-line `run:` keys
-let a `run: |` block and a `shell: sudo …` key through; it was replaced.
+the LUKS step. In the CI workflow the only sudo it allows is `sudo
+apt-get` as a command of its own: with every `sudo apt-get` taken out, no
+sudo may remain, whatever the key (`run:`, `shell:`), the layout (one line
+or a `run: |` block) or what it follows (`&&`, `;`). It requires CI to run
+`bash verify.sh` and the verifier to run the LUKS step directly. It fails
+on the previous `verify.sh`. It also runs the LUKS step with an unlocked
+fake `sudo` first on `PATH`: the step must pass and leave the fake
+untouched, which catches a sudo reached through a helper or a sourced file
+that the grep on two files cannot see.
+
+Earlier versions of the CI check read only one-line `run:` keys, then
+exempted every line naming `apt-get`, which let `sudo apt-get … && sudo
+bash verify.sh` through; and one required CI to name sudo at all, which a
+workflow without any sudo would have failed for no reason.
+
+Not changed (no defect in behaviour): the LUKS step runs twice per
+verification, once inside the contract suite with the fake `sudo` and
+once as the verifier's own step.
