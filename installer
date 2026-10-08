@@ -196,38 +196,91 @@ check_disk() {
 #============================================================================================
 # cleanup: the safety net ===================================================================
 # ===========================================================================================
-# what this run mounted or opened, set by the step that did it and only in a
-# real run: cleanup undoes this run's own work and nothing else, so a dry run
-# (or a run that stopped before opening anything) leaves a mounted or opened
-# system exactly as it found it. INSTALLER_OWNED_FILE, when set by the
-# bootstrap wrapper, receives the same names so the wrapper can adopt them.
-OWNED_MOUNT=0
+# what this run mounted or opened, recorded by the step that did it and only
+# in a real run: cleanup undoes this run's own work and nothing else, so a
+# dry run, or a run that stopped before mounting or opening anything, leaves
+# the system exactly as it found it. A run refuses to start when /mnt or a
+# mapper is already in use (refuse_busy_target), so whatever is recorded here
+# was this run's.
+OWNED_MOUNTS=()
 OWNED_ROOT_MAPPER=0
 OWNED_VM_MAPPER=0
 
-own() {
+own_mount() { OWNED_MOUNTS+=("$1"); }
+
+#a step that released its own mount takes the newest record of it off the list
+disown_mount() {
+	local i
+	for (( i = ${#OWNED_MOUNTS[@]} - 1; i >= 0; i-- )); do
+		if [[ ${OWNED_MOUNTS[i]} == "$1" ]]; then
+			unset 'OWNED_MOUNTS[i]'
+			OWNED_MOUNTS=("${OWNED_MOUNTS[@]}")
+			return 0
+		fi
+	done
+}
+
+own_mapper() {
 	case "$1" in
-		MOUNT|ROOT_MAPPER|VM_MAPPER) printf -v "OWNED_$1" '%s' 1 ;;
-		*) echo "Internal error: unknown owned resource $1" >&2; return 1 ;;
+		ROOT) OWNED_ROOT_MAPPER=1 ;;
+		VM)   OWNED_VM_MAPPER=1 ;;
+		*) echo "Internal error: unknown mapper $1" >&2; return 1 ;;
 	esac
-	if [[ -n ${INSTALLER_OWNED_FILE:-} ]]; then
-		echo "$1" >> "$INSTALLER_OWNED_FILE"
-	fi
 }
 
 cleanup() {
-	#unmount only what this run mounted
-	if (( OWNED_MOUNT )); then
-		umount -R "$MOUNT_ROOT" 2>/dev/null || true
+	local i err left=()
+	#newest mount first, each one this run recorded
+	for (( i = ${#OWNED_MOUNTS[@]} - 1; i >= 0; i-- )); do
+		if ! err=$(umount "${OWNED_MOUNTS[i]}" 2>&1); then
+			echo "[CLEANUP-FAIL] umount ${OWNED_MOUNTS[i]}: ${err:-failed}" >&2
+			left+=("umount ${OWNED_MOUNTS[i]}")
+		fi
+	done
+	#then the mappers this run opened, vm first, then root
+	if (( OWNED_VM_MAPPER )) && ! err=$(cryptsetup close "$VM_LUKS_NAME" 2>&1); then
+		echo "[CLEANUP-FAIL] cryptsetup close $VM_LUKS_NAME: ${err:-failed}" >&2
+		left+=("cryptsetup close $VM_LUKS_NAME")
 	fi
-	#closing the disks this run opened (reverse of open order: vm first, then root)
-	if (( OWNED_VM_MAPPER )); then
-		cryptsetup close "$VM_LUKS_NAME" 2>/dev/null || true
+	if (( OWNED_ROOT_MAPPER )) && ! err=$(cryptsetup close "$LUKS_NAME" 2>&1); then
+		echo "[CLEANUP-FAIL] cryptsetup close $LUKS_NAME: ${err:-failed}" >&2
+		left+=("cryptsetup close $LUKS_NAME")
 	fi
-	if (( OWNED_ROOT_MAPPER )); then
-		cryptsetup close "$LUKS_NAME" 2>/dev/null || true
+	if (( ${#left[@]} )); then
+		echo "[CLEANUP-FAIL] this run's work is still mounted or open; a new run" >&2
+		echo "               refuses to start until it is released. Finish with:" >&2
+		printf '                 %s\n' "${left[@]}" >&2
 	fi
 	return 0
+}
+
+# ===========================================================================================
+# refuse_busy_target: never start over an earlier run's leftovers ===========================
+# ===========================================================================================
+# cleanup releases only this run's own work, so a run that died earlier can
+# leave /mnt mounted or a mapper open. Starting over it would fail half way
+# (luksOpen "already exists") or, worse, write into it. Refuse up front, in the
+# dry run too, and name the exact commands that release it.
+refuse_busy_target() {
+	local busy=() target
+	while IFS= read -r target; do
+		if [[ $target == "$MOUNT_ROOT" || $target == "$MOUNT_ROOT"/* ]]; then
+			busy+=("umount -R $MOUNT_ROOT")
+			break
+		fi
+	done < <(findmnt -rno TARGET 2>/dev/null)
+	[[ -e $VM_LUKS_MAPPER ]] && busy+=("cryptsetup close $VM_LUKS_NAME")
+	[[ -e $LUKS_MAPPER ]] && busy+=("cryptsetup close $LUKS_NAME")
+	(( ${#busy[@]} == 0 )) && return 0
+
+	if (( DRY_RUN )); then
+		echo "[DRY-RUN] a real run would refuse to start: $MOUNT_ROOT or a LUKS mapper is already in use" >&2
+	else
+		echo "Refusing to start: $MOUNT_ROOT or a LUKS mapper is already in use" >&2
+	fi
+	echo "Release them first (an earlier run's leftovers, or something of yours):" >&2
+	printf '  %s\n' "${busy[@]}" >&2
+	return 1
 }
 
 # ===========================================================================================
@@ -436,7 +489,7 @@ encrypt_root() {
 	echo "Opening $part as $LUKS_NAME ..." >&2
 	printf '%s' "$passphrase" | cryptsetup open --key-file - "$part" "$LUKS_NAME" \
 		|| { echo "luksOpen failed on $part" >&2; return 1; }
-	own ROOT_MAPPER
+	own_mapper ROOT
 
 	#the mapper node is the contract handed to the btrfs phase
 	if [[ ! -e $LUKS_MAPPER ]]; then
@@ -550,18 +603,19 @@ create_subvolumes() {
 	mkdir -p "$BTRFS_TOP" || { echo "mkdir $BTRFS_TOP failed" >&2; return 1; }
 	mount -o subvolid=5 "$LUKS_MAPPER" "$BTRFS_TOP" \
 		|| { echo "mount of btrfs top-level failed" >&2; return 1; }
-	own MOUNT
+	own_mount "$BTRFS_TOP"
 
 	local record subvol rest
 	for record in "${SUBVOL_LAYOUT[@]}"; do
 		IFS='|' read -r subvol rest <<< "$record"
 		btrfs subvolume create "$BTRFS_TOP/$subvol" > /dev/null \
 			|| { echo "btrfs subvolume create $subvol failed" >&2
-			     umount "$BTRFS_TOP" 2>/dev/null || true
+			     umount "$BTRFS_TOP" 2>/dev/null && disown_mount "$BTRFS_TOP"
 			     return 1; }
 	done
 
 	umount "$BTRFS_TOP" || { echo "umount $BTRFS_TOP failed" >&2; return 1; }
+	disown_mount "$BTRFS_TOP"
 	rmdir "$BTRFS_TOP" 2>/dev/null || true
 	echo "[OK] subvolumes created" >&2
 	return 0
@@ -604,13 +658,13 @@ mount_layout() {
 		if [[ $extra == "nocow" ]]; then
 			mount -o "noatime,subvol=$subvol" "$LUKS_MAPPER" "$target" \
 				|| { echo "mount of $subvol failed" >&2; return 1; }
-			own MOUNT
+			own_mount "$target"
 			chattr +C "$target" \
 				|| { echo "chattr +C failed on $target" >&2; return 1; }
 		else
 			mount -o "$BTRFS_OPTS,subvol=$subvol" "$LUKS_MAPPER" "$target" \
 				|| { echo "mount of $subvol failed" >&2; return 1; }
-			own MOUNT
+			own_mount "$target"
 		fi
 	done
 
@@ -619,7 +673,7 @@ mount_layout() {
 	mkdir -p "$MOUNT_ROOT/boot" || { echo "mkdir /boot failed" >&2; return 1; }
 	mount "$ESP_PART" "$MOUNT_ROOT/boot" \
 		|| { echo "mount of ESP at /boot failed" >&2; return 1; }
-	own MOUNT
+	own_mount "$MOUNT_ROOT/boot"
 
 	echo "[OK] layout mounted under $MOUNT_ROOT" >&2
 	return 0
@@ -944,7 +998,7 @@ encrypt_vm_disk() {
 		|| { echo "luksFormat (vm) failed" >&2; return 1; }
 	cryptsetup open --key-file "$MOUNT_ROOT$VM_KEYFILE" "$VM_PART" "$VM_LUKS_NAME" \
 		|| { echo "luksOpen (vm) failed" >&2; return 1; }
-	own VM_MAPPER
+	own_mapper VM
 
 	#crypttab: unlocked after root, by keyfile. the UUID form is stable.
 	local vm_uuid
@@ -961,10 +1015,10 @@ encrypt_vm_disk() {
 	#pointing the mountpoint at the root container — the second disk sits unused.
 	#the @vm subvol inside the root container stays behind, empty and unmounted.
 	local target="$MOUNT_ROOT$vm_mount"
-	umount "$target" 2>/dev/null || true   #mounted by mount_layout; absent on reruns
+	umount "$target" 2>/dev/null && disown_mount "$target"   #mounted by mount_layout
 	mount -o noatime "$VM_LUKS_MAPPER" "$target" \
 		|| { echo "mount of $VM_LUKS_MAPPER at $target failed" >&2; return 1; }
-	own MOUNT
+	own_mount "$target"
 	# The mounted filesystem root is still empty, so this is the one safe time
 	# to establish the No_COW inheritance contract for every VM image below it.
 	chattr +C "$target" \
@@ -990,6 +1044,7 @@ main() {
 	check_root || exit 1
 	check_uefi || exit 1
 	check_network || exit 1
+	refuse_busy_target || exit 1
 
 	#capturing selected disk
 	local disk # declaration and assignment separate

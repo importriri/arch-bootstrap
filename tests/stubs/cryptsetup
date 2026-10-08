@@ -22,7 +22,8 @@ case "$1" in
     ;;
   isLuks)   exit "${STUB_ISLUKS:-1}" ;;                            # default: not a luks device
   luksUUID) echo "${STUB_LUKS_UUID:-11111111-2222-3333-4444-555555555555}" ;;
-  luksFormat|open|close) : ;;                                      # succeed, header not really touched
+  luksFormat|open) : ;;                                            # succeed, header not really touched
+  close)    exit "${STUB_CLOSE_RC:-0}" ;;                          # STUB_CLOSE_RC: a mapper still busy
   *) : ;;
 esac
 exit 0

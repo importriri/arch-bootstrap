@@ -275,25 +275,44 @@ source_sandbox() {
 	[ -z "$output" ]
 }
 
-@test "cleanup undoes only what this run mounted or opened" {
+@test "cleanup unmounts, newest first, only the mount points this run recorded" {
 	source_real
-	#nothing owned: no umount, no close, even with a system mounted elsewhere
+	#nothing recorded: nothing unmounted or closed, whatever else is mounted
 	cleanup
 	[ ! -s "$STUB_LOG" ]
-	#a real run that opened the root mapper and mounted the layout, but never
-	#opened the VM container: those two are undone, cryptvm is left alone
-	own ROOT_MAPPER
-	own MOUNT
+	#only the btrfs top level was mounted: that is what is released, never /mnt
+	own_mount /mnt/.btrfs-top
 	cleanup
-	grep -qx 'umount -R /mnt' "$STUB_LOG"
-	grep -qx 'cryptsetup close cryptroot' "$STUB_LOG"
-	run grep -c 'cryptvm' "$STUB_LOG"
-	[ "$output" = "0" ]
-	#the wrapper learns the same names through INSTALLER_OWNED_FILE
-	INSTALLER_OWNED_FILE="$BATS_TEST_TMPDIR/owned" own VM_MAPPER
-	[ "$(cat "$BATS_TEST_TMPDIR/owned")" = "VM_MAPPER" ]
-	run own SOMETHING_ELSE
+	[ "$(cat "$STUB_LOG")" = "umount /mnt/.btrfs-top" ]
+	#a layout and the root mapper: newest mount first, then the mapper
+	: > "$STUB_LOG"
+	OWNED_MOUNTS=()
+	own_mount /mnt/
+	own_mount /mnt/home
+	own_mount /mnt/boot
+	own_mapper ROOT
+	cleanup
+	[ "$(cat "$STUB_LOG")" = "$(printf 'umount /mnt/boot\numount /mnt/home\numount /mnt/\ncryptsetup close cryptroot')" ]
+	#a step that released its own mount takes it off the list
+	: > "$STUB_LOG"
+	OWNED_MOUNTS=()
+	OWNED_ROOT_MAPPER=0
+	own_mount /mnt/.btrfs-top
+	disown_mount /mnt/.btrfs-top
+	cleanup
+	[ ! -s "$STUB_LOG" ]
+	run own_mapper SOMETHING
 	[ "$status" -eq 1 ]
+}
+
+@test "cleanup says what it could not undo and how to finish it" {
+	source_real
+	own_mount /mnt/
+	own_mapper ROOT
+	STUB_UMOUNT_RC=32 STUB_CLOSE_RC=5 run cleanup
+	[[ "$output" == *"[CLEANUP-FAIL] umount /mnt/"* ]]
+	[[ "$output" == *"[CLEANUP-FAIL] cryptsetup close cryptroot"* ]]
+	[[ "$output" == *"still mounted or open"* ]]
 }
 
 # ---- confirm_wipe (the destruction gate) -------------------------------------

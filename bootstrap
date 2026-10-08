@@ -137,30 +137,33 @@ EOF
 	echo "[OK] stage-2 storage contract written: $BOOTSTRAP_STORAGE_CONTRACT" >&2
 }
 
-bootstrap_main() {
-	# A real run leaves the target mounted and opened for the checks below;
-	# the installer names what it mounted or opened, and only that becomes
-	# this wrapper's to clean up. A dry run owns nothing.
-	if (( DRY_RUN )); then
-		bash "$BOOTSTRAP_DIR/installer" "$@" || return 1
-	else
-		local owned_file what
-		local -a owned=()
-		owned_file=$(mktemp) || { echo "Could not create the owned-resources file" >&2; return 1; }
-		INSTALLER_OWNED_FILE="$owned_file" bash "$BOOTSTRAP_DIR/installer" "$@" \
-			|| { rm -f -- "$owned_file"; return 1; }
-		mapfile -t owned < "$owned_file"
-		rm -f -- "$owned_file"
-		for what in "${owned[@]}"; do
-			own "$what" || return 1
-		done
+# adopt_installer_work: a successful real installer run leaves the layout
+# mounted and the root mapper (and the VM mapper, on two disks) open for the
+# checks below. The installer refused to start if any of them was already in
+# use, so all of them are this run's, and this wrapper's to release on failure.
+adopt_installer_work() {
+	local record mount
+	for record in "${SUBVOL_LAYOUT[@]}"; do
+		IFS='|' read -r _ mount _ <<< "$record"
+		own_mount "$MOUNT_ROOT$mount"
+	done
+	own_mount "$MOUNT_ROOT/boot"
+	own_mapper ROOT
+	if [[ -e $VM_LUKS_MAPPER ]]; then
+		own_mapper VM
 	fi
+}
+
+bootstrap_main() {
+	bash "$BOOTSTRAP_DIR/installer" "$@" || return 1
 
 	if (( DRY_RUN )); then
 		echo "[DRY-RUN] real installation would verify the selected VM-store mapper/fsroot/+C" >&2
 		echo "[DRY-RUN] real installation would write $BOOTSTRAP_STORAGE_CONTRACT" >&2
 		return 0
 	fi
+
+	adopt_installer_work
 
 	local topology
 	topology=$(detect_vm_storage_topology) || return 1

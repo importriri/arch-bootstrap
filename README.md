@@ -126,9 +126,11 @@ real format. It never uses the passphrase and writes nothing: the only
 external commands it runs are `sgdisk --pretend` and `cryptsetup --help`
 (plus `cryptsetup isLuks` on an existing partition), besides read-only
 probes such as `lsblk`, `findmnt` and `ping`. At its exit, the installer
-and the wrapper unmount and close only what the same run mounted or opened,
-so a dry run unmounts and closes nothing, even on a host where an earlier
-installation is still mounted. `sgdisk --pretend` cannot
+and the wrapper unmount, one mount point at a time, and close only what the
+same run mounted or opened, and say what they could not release; a dry run
+unmounts and closes nothing. Any run, the dry run included, refuses to
+start while `/mnt` or a `cryptroot`/`cryptvm` mapper is already in use, and
+names the commands that release them. `sgdisk --pretend` cannot
 simulate `--zap-all`, so on a disk that already holds a partition table
 the printed plan shows the old partitions, sgdisk ends with "Error
 encountered; not saving changes", and the dry run stops there with

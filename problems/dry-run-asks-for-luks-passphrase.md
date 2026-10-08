@@ -50,11 +50,18 @@ twice, never uses it, writes nothing, and names the only external commands
 it runs; it also states the `--zap-all` limit of the printed plan.
 
 Cleanup now undoes only what the same run mounted or opened: every real
-`cryptsetup open` and mount sets a flag (`own`), and `cleanup` acts on the
-flags alone. The wrapper learns what the installer owns through a
-temporary file it hands to the installer in a real run, and adopts those
-names only when the installer succeeded and left the target mounted for
-its checks. A dry run sets no flag, so it unmounts and closes nothing.
+`cryptsetup open` records its mapper and every real mount records its own
+mount point, and `cleanup` unmounts those points one by one, newest first,
+then closes those mappers. A step that releases its own mount takes it off
+the list. What cleanup cannot release it reports, with the commands that
+finish the job, instead of hiding it. After a successful installer run the
+wrapper owns the layout's mount points and the mappers itself: it knows
+them from the layout, and it knows they are this run's because the
+installer refuses to start when `/mnt` or a mapper is already in use. That
+refusal holds in the dry run too, which says that a real run would refuse
+and exits with an error; it is what keeps a run that died earlier from
+blocking the next one without a word. A dry run records nothing, so it
+unmounts and closes nothing.
 
 ## Test
 
@@ -74,3 +81,13 @@ the exit too. Both fail on the code before this fix, which logged `umount
 safety net: with nothing owned `cleanup` runs nothing, and after a real
 run's open and mounts it undoes those and leaves the VM mapper it never
 opened.
+
+A second review found three gaps in that first version, closed with
+their own tests: one flag stood for every mount and released `umount -R
+/mnt` even when only `/mnt/.btrfs-top` was this run's (or when `/mnt` was
+the operator's); the names travelled from installer to wrapper through a
+temporary file whose write was never checked; and teardown errors were
+hidden. `tests/unit.bats` checks newest-first unmounting of recorded
+points only and the reported failures; `tests/bootstrap-contract.bats`
+checks the refusal over a mounted `/mnt` and over an open mapper, in dry
+run, and the wrapper's adoption without a side channel.

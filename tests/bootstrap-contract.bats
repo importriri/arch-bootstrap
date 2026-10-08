@@ -190,12 +190,27 @@ setup() {
 _dry_run_bootstrap() {
 	local box="$BATS_TEST_TMPDIR/box"
 	mkdir -p "$box/bin"
+	mkdir -p "$box/mapper"
 	sed -e 's/^check_root() {$/check_root() { echo "[TEST] root guard skipped" >\&2; return 0; }\n_real_check_root() {/' \
 	    -e 's/^check_uefi() {$/check_uefi() { echo "[TEST] UEFI guard skipped" >\&2; return 0; }\n_real_check_uefi() {/' \
+	    -e "s|/dev/mapper/|$box/mapper/|g" \
 	    "$REPO/installer" > "$box/installer"
 	cp "$REPO/bootstrap" "$box/bootstrap"
 	grep -q 'root guard skipped' "$box/installer"
 	grep -q 'UEFI guard skipped' "$box/installer"
+	grep -q "$box/mapper/" "$box/installer"
+	#findmnt lists no mount under /mnt unless a test sets STUB_MOUNTS
+	cat > "$box/bin/findmnt" <<'STUB'
+#!/usr/bin/env bash
+source "$STUB_DIR/_stub_lib.sh"
+_log "$@"
+if [[ "$*" == "-rno TARGET" && -n ${STUB_MOUNTS:-} ]]; then
+	printf '%s\n' $STUB_MOUNTS
+	exit 0
+fi
+exit 1
+STUB
+	chmod +x "$box/bin/findmnt"
 	cat > "$box/bin/lsblk" <<'STUB'
 #!/usr/bin/env bash
 source "$STUB_DIR/_stub_lib.sh"
@@ -232,4 +247,53 @@ STUB
 	run grep -Ev '^(ping |lsblk |findmnt |sgdisk --pretend |cryptsetup --help$|cryptsetup isLuks )' "$STUB_LOG"
 	[ "$status" -eq 1 ]
 	[ -z "$output" ]
+}
+
+@test "a run refuses to start over a mounted /mnt, and the dry run says so" {
+	#problems/dry-run-asks-for-luks-passphrase.md: cleanup no longer releases
+	#what an earlier run left behind, so a new run must refuse to start on it
+	_dry_run_bootstrap STUB_MOUNTS="/mnt /mnt/boot"
+	[ "$status" -ne 0 ]
+	[[ "$output" == *"a real run would refuse"* ]]
+	[[ "$output" == *"umount -R /mnt"* ]]
+	run grep -c '^sgdisk ' "$STUB_LOG"
+	[ "$output" = "0" ]
+	run grep -Ev '^(ping |lsblk |findmnt |cryptsetup --help$|cryptsetup isLuks )' "$STUB_LOG"
+	[ -z "$output" ]
+}
+
+@test "a run refuses to start over an open cryptroot or cryptvm" {
+	local box="$BATS_TEST_TMPDIR/box"
+	mkdir -p "$box/mapper"
+	: > "$box/mapper/cryptvm"
+	_dry_run_bootstrap
+	[ "$status" -ne 0 ]
+	[[ "$output" == *"a real run would refuse"* ]]
+	[[ "$output" == *"cryptsetup close cryptvm"* ]]
+	run grep -c '^sgdisk ' "$STUB_LOG"
+	[ "$output" = "0" ]
+}
+
+@test "the wrapper owns what a successful installer leaves, without a side channel" {
+	#problems/dry-run-asks-for-luks-passphrase.md
+	run grep -nE 'mktemp|INSTALLER_OWNED_FILE' "$REPO/bootstrap" "$REPO/installer"
+	[ "$status" -eq 1 ]
+	local box="$BATS_TEST_TMPDIR/adopt"
+	mkdir -p "$box/mapper"
+	sed -e "s|\"/mnt\"|\"$BATS_TEST_TMPDIR/mnt\"|g" \
+	    -e "s|\"/mnt/.btrfs-top\"|\"$BATS_TEST_TMPDIR/mnt/.btrfs-top\"|g" \
+	    -e "s|/dev/mapper/|$box/mapper/|g" \
+	    "$REPO/installer" > "$box/installer"
+	cp "$REPO/bootstrap" "$box/bootstrap"
+	run bash -c "source '$box/bootstrap'; adopt_installer_work
+		printf '%s\n' \"\${OWNED_MOUNTS[@]}\"; echo root=\$OWNED_ROOT_MAPPER vm=\$OWNED_VM_MAPPER"
+	[ "$status" -eq 0 ]
+	m="$BATS_TEST_TMPDIR/mnt"
+	[ "${lines[0]}" = "$m/" ]
+	[ "${lines[1]}" = "$m/home" ]
+	[ "${lines[7]}" = "$m/boot" ]
+	[ "${lines[8]}" = "root=1 vm=0" ]
+	: > "$box/mapper/cryptvm"
+	run bash -c "source '$box/bootstrap'; adopt_installer_work; echo vm=\$OWNED_VM_MAPPER"
+	[ "${lines[-1]}" = "vm=1" ]
 }

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/_stub_lib.sh"
 _log "$@"
-exit 0
+# STUB_UMOUNT_RC simulates a mount that cannot be released (e.g. 32: busy).
+[[ -n ${STUB_UMOUNT_RC:-} ]] && echo "umount: $*: target is busy." >&2
+exit "${STUB_UMOUNT_RC:-0}"
