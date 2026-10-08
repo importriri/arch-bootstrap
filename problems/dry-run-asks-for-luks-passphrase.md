@@ -103,3 +103,19 @@ root-side `@vm` that could not be released had `cryptvm` mounted over it in
 silence, which is now an error. The layout's mount points come from one
 function, `layout_mount_points`, that `mount_layout` checks itself against
 and the wrapper adopts.
+
+Reviewed and left as they are (style, redundancy or unproven, no defect
+in real behaviour): the CI check takes out every `sudo apt-get` without
+looking at its options, so an `-o …Pre-Invoke` option could still run a
+command as root, an action named `sudo-…` passes and a YAML comment naming
+sudo fails; the refusal prints `findmnt -r` targets escaped (`\x20`), not
+copyable for paths with spaces; `encrypt_vm_disk` releases the root-side
+`@vm` only after the second disk is formatted; `mount_layout` checks itself
+against `layout_mount_points`, two derivations of the same layout; a
+negative assertion in the leftovers test is empty when that line is last;
+the layout test repeats `source_sandbox`'s sed; the cryptvm refusal test
+is still named "cryptroot or cryptvm"; a failing `findmnt` in a dry run
+says "Refusing to start" without the `[DRY-RUN]` prefix; and
+`encrypt_vm_disk` looks up the nocow mount point with its own loop while
+`bootstrap` has `vm_storage_mountpoint`.
+
