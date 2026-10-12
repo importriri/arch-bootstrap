@@ -7,11 +7,14 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 cd "$ROOT"
 
-required=(bash shellcheck bats cryptsetup)
+required=(bash shellcheck bats cryptsetup python3)
 for tool in "${required[@]}"; do
 	command -v "$tool" >/dev/null \
 		|| { echo "missing verification dependency: $tool" >&2; exit 2; }
 done
+# The storage contract is read by a YAML parser, as HyperLab reads it.
+python3 -c 'import yaml' 2>/dev/null \
+	|| { echo "missing verification dependency: python3 yaml (PyYAML)" >&2; exit 2; }
 
 shell_paths=(
 	bootstrap

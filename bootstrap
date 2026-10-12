@@ -105,7 +105,9 @@ write_storage_contract() {
 	local mountpoint expected_source expected_subvolume vm_partlabel contract_path
 	mountpoint=$(vm_storage_mountpoint) || return 1
 	expected_source="$LUKS_MAPPER"
-	expected_subvolume="@vm"
+	# Quoted in the YAML: a plain scalar cannot start with "@", which YAML
+	# reserves, and a parser refuses the whole file.
+	expected_subvolume='"@vm"'
 	vm_partlabel="null"
 	if [[ $topology == "dedicated-disk" ]]; then
 		expected_source="$VM_LUKS_MAPPER"

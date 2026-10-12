@@ -18,6 +18,8 @@ the check that now prevents a regression.
   loaded yet.
 - [`luks-passphrase-trailing-newline.md`](luks-passphrase-trailing-newline.md)
   explains the passphrase transport rule used by real LUKS2 tests.
+- [`storage-contract-was-not-valid-yaml.md`](storage-contract-was-not-valid-yaml.md)
+  records why the storage contract is tested through a YAML parser.
 - [`testing-without-udev-or-device-mapper.md`](testing-without-udev-or-device-mapper.md)
   defines why the complete storage gate requires an Arch-capable VM instead of
   a restricted container.

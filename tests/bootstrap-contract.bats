@@ -14,6 +14,22 @@ setup() {
 	source "$SANDBOX/bootstrap"
 }
 
+# contract_as_parsed FILE: the storage contract as a YAML parser reads it, one
+# field a line in the file's order with its parsed value (a string quoted,
+# null as None, true as True); a status other than 0 when it is not valid YAML.
+contract_as_parsed() {
+	python3 - "$1" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    contract = yaml.safe_load(handle)
+print("schema_version=%r" % contract["schema_version"])
+for key, value in contract["vm_store"].items():
+    print("%s=%r" % (key, value))
+PY
+}
+
 @test "the wrapper invokes installer through Bash" {
 	run grep -F 'bash "$BOOTSTRAP_DIR/installer" "$@"' "$REPO/bootstrap"
 	[ "$status" -eq 0 ]
@@ -34,12 +50,19 @@ setup() {
 	[ "$status" -eq 0 ]
 	contract="$MOUNT_ROOT$BOOTSTRAP_STORAGE_CONTRACT"
 	[ -f "$contract" ]
-	grep -q '^schema_version: 1$' "$contract"
-	grep -q '^  topology: single-disk$' "$contract"
-	grep -q '^  mountpoint: /var/lib/libvirt/images$' "$contract"
-	grep -q '^  mapper: /dev/mapper/cryptroot$' "$contract"
-	grep -q '^  subvolume: @vm$' "$contract"
-	grep -q '^  vm_partlabel: null$' "$contract"
+	#problems/storage-contract-was-not-valid-yaml.md: read by a YAML parser,
+	#as HyperLab reads it, not compared as text
+	run contract_as_parsed "$contract"
+	[ "$status" -eq 0 ]
+	[ "$output" = "schema_version=1
+topology='single-disk'
+mountpoint='/var/lib/libvirt/images'
+mapper='/dev/mapper/cryptroot'
+fstype='btrfs'
+subvolume='@vm'
+require_nocow=True
+root_partlabel='ARCH_ROOT'
+vm_partlabel=None" ]
 	[ "$(stat -c %a "$contract")" = 644 ]
 }
 
@@ -51,10 +74,17 @@ setup() {
 	run write_storage_contract dedicated-disk
 	[ "$status" -eq 0 ]
 	contract="$MOUNT_ROOT$BOOTSTRAP_STORAGE_CONTRACT"
-	grep -q '^  topology: dedicated-disk$' "$contract"
-	grep -q '^  mapper: /dev/mapper/cryptvm$' "$contract"
-	grep -q '^  subvolume: null$' "$contract"
-	grep -q '^  vm_partlabel: ARCH_VM$' "$contract"
+	run contract_as_parsed "$contract"
+	[ "$status" -eq 0 ]
+	[ "$output" = "schema_version=1
+topology='dedicated-disk'
+mountpoint='/var/lib/libvirt/images'
+mapper='/dev/mapper/cryptvm'
+fstype='btrfs'
+subvolume=None
+require_nocow=True
+root_partlabel='ARCH_ROOT'
+vm_partlabel='ARCH_VM'" ]
 }
 
 @test "dedicated key finalization requires a regular keyfile and mode 0400" {
