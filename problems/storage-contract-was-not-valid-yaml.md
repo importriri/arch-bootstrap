@@ -40,6 +40,39 @@ string, `None` for null, `True` for `require_nocow`. Against `34aa9cd` the
 single-disk test fails (the parser refuses the file); with the fix both pass.
 `verify.sh` and CI now require Python's YAML module.
 
+## Repair on a host installed with `34aa9cd`
+
+The fix changes only new installations: `bootstrap` does not run again on an
+installed host, and HyperLab's adoption never replaces a contract that
+already exists. On such a host, as root, quote the one value in place and
+check the result:
+
+```bash
+contract=/etc/privatestack/bootstrap-storage.yml
+sha256sum "$contract"                                  # keep, before
+sed -i 's/^  subvolume: @vm$/  subvolume: "@vm"/' "$contract"
+python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["vm_store"]["subvolume"])' "$contract"
+stat -c '%U:%G %a' "$contract"                         # root:root 644
+sha256sum "$contract"                                  # keep, after
+```
+
+The parser prints `@vm`; nothing else in the file changes. A dedicated-disk
+installation (`subvolume: null`) needs no repair. Reinstalling with the
+fixed writer is the complete proof.
+
+The tests also refuse a repeated key (which `safe_load` would resolve in
+silence to the last copy) and any top-level key besides `schema_version`
+and `vm_store`, and the dedicated-disk test now checks the file exists with
+mode 0644, as the single-disk test already did. Each of the three was
+proved with a writer mutant that passed the previous tests and fails now.
+
+Reviewed and left as they are (2026-10-12): the other values are still
+written unquoted, but each is a fixed constant of the installer; the writer
+does not read the file back after writing it; `expected_subvolume` holds
+the YAML form `"@vm"`, used only in the heredoc; an unknown topology is
+written with the single-disk values, but its only caller returns one of the
+two known ones.
+
 ## The lesson
 
 A file written for another program is tested by reading it the way that

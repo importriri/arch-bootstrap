@@ -14,16 +14,33 @@ setup() {
 	source "$SANDBOX/bootstrap"
 }
 
-# contract_as_parsed FILE: the storage contract as a YAML parser reads it, one
-# field a line in the file's order with its parsed value (a string quoted,
-# null as None, true as True); a status other than 0 when it is not valid YAML.
+# contract_as_parsed FILE: the storage contract as a YAML parser reads it: its
+# top-level keys, then one field a line in the file's order with its parsed
+# value (a string quoted, null as None, true as True). A status other than 0
+# when it is not valid YAML or repeats a key, which safe_load would otherwise
+# resolve in silence to the last copy.
 contract_as_parsed() {
 	python3 - "$1" <<'PY'
 import sys
 import yaml
 
+
+class NoDuplicateKeys(yaml.SafeLoader):
+    pass
+
+
+def mapping(loader, node, deep=False):
+    keys = [loader.construct_object(key, deep=deep) for key, _ in node.value]
+    if len(keys) != len(set(keys)):
+        raise yaml.constructor.ConstructorError(
+            None, None, "a key is repeated", node.start_mark)
+    return loader.construct_mapping(node, deep)
+
+
+NoDuplicateKeys.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, mapping)
 with open(sys.argv[1], encoding="utf-8") as handle:
-    contract = yaml.safe_load(handle)
+    contract = yaml.load(handle, Loader=NoDuplicateKeys)
+print("keys=%s" % ",".join(contract))
 print("schema_version=%r" % contract["schema_version"])
 for key, value in contract["vm_store"].items():
     print("%s=%r" % (key, value))
@@ -54,7 +71,8 @@ PY
 	#as HyperLab reads it, not compared as text
 	run contract_as_parsed "$contract"
 	[ "$status" -eq 0 ]
-	[ "$output" = "schema_version=1
+	[ "$output" = "keys=schema_version,vm_store
+schema_version=1
 topology='single-disk'
 mountpoint='/var/lib/libvirt/images'
 mapper='/dev/mapper/cryptroot'
@@ -74,9 +92,11 @@ vm_partlabel=None" ]
 	run write_storage_contract dedicated-disk
 	[ "$status" -eq 0 ]
 	contract="$MOUNT_ROOT$BOOTSTRAP_STORAGE_CONTRACT"
+	[ -f "$contract" ]
 	run contract_as_parsed "$contract"
 	[ "$status" -eq 0 ]
-	[ "$output" = "schema_version=1
+	[ "$output" = "keys=schema_version,vm_store
+schema_version=1
 topology='dedicated-disk'
 mountpoint='/var/lib/libvirt/images'
 mapper='/dev/mapper/cryptvm'
@@ -85,6 +105,7 @@ subvolume=None
 require_nocow=True
 root_partlabel='ARCH_ROOT'
 vm_partlabel='ARCH_VM'" ]
+	[ "$(stat -c %a "$contract")" = 644 ]
 }
 
 @test "dedicated key finalization requires a regular keyfile and mode 0400" {
