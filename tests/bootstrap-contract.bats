@@ -396,6 +396,86 @@ STUB
 	[ "$output" = "0" ]
 }
 
+@test "required storage CI executes both checkouts and propagates verifier failure" {
+	run python3 - "$REPO" "$BATS_TEST_TMPDIR/workflow" <<'PY'
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import yaml
+
+repo, box = map(Path, sys.argv[1:])
+workflow = yaml.safe_load((repo / ".github/workflows/ci.yml").read_text())
+# PyYAML's YAML 1.1 loader reads the unquoted GitHub Actions `on` as True.
+triggers = workflow.get("on", workflow.get(True))
+assert set(triggers) == {"push", "pull_request"}, triggers
+# No branch, path or type filter narrows the normal triggers.
+assert not any(triggers.values()), triggers
+jobs = workflow["jobs"]
+assert "storage-contract" in jobs, "missing required storage-contract job"
+job = jobs["storage-contract"]
+assert not job.get("if") and not job.get("continue-on-error")
+assert any(step.get("run") == "bash verify.sh" for step in jobs["test"]["steps"])
+box.mkdir()
+checkouts = []
+verifiers = []
+for step in job["steps"]:
+    assert not step.get("if") and not step.get("continue-on-error")
+    if step.get("uses", "").startswith("actions/checkout@"):
+        options = step.get("with", {})
+        path = options.get("path", ".")
+        target = box / path
+        assert target.resolve().is_relative_to(box.resolve())
+        target.mkdir(parents=True, exist_ok=True)
+        checkouts.append(options)
+        if options.get("repository"):
+            assert options["repository"] == "importriri/hyperlab-ansible"
+            assert options["ref"] == "main"
+        else:
+            # A recording verifier stands in for the complete battery. Execute
+            # the actual workflow body, including its environment and directory.
+            (target / "verify.sh").write_text('''#!/usr/bin/env bash
+python3 - <<'RECORD'
+import json, os
+from pathlib import Path
+Path(os.environ["RECORD"]).write_text(json.dumps({
+    "required": os.environ.get("CROSS_REPO_STORAGE_REQUIRED"),
+    "sibling": os.environ.get("HYPERLAB_ANSIBLE_REPO"),
+    "cwd": os.getcwd(),
+}))
+RECORD
+exit "${VERIFY_RC}"
+''')
+    elif "run" in step:
+        # Provisioning is not executed: only the verifier run body is under test.
+        if "verify.sh" in step["run"]:
+            verifiers.append(step)
+assert len(checkouts) == 2 and len(verifiers) == 1, (checkouts, verifiers)
+step = verifiers[0]
+assert step.get("shell", "bash") == "bash"
+for code in (0, 23):
+    env = dict(os.environ, GITHUB_WORKSPACE=str(box), RECORD=str(box / "record"),
+               VERIFY_RC=str(code))
+    for key, value in {**job.get("env", {}), **step.get("env", {})}.items():
+        env[key] = str(value).replace("${{ github.workspace }}", str(box))
+    cwd = box / step.get("working-directory", ".")
+    result = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail",
+                             "-c", step["run"]], cwd=cwd, env=env, check=False)
+    assert result.returncode == code, (code, result.returncode)
+    record = json.loads((box / "record").read_text())
+    assert record["required"] == "1", record
+    sibling = Path(record["sibling"])
+    expected = next(item["path"] for item in checkouts if item.get("repository"))
+    assert sibling == box / expected, record
+    assert sibling.is_dir(), record
+    assert Path(record["cwd"]) / "verify.sh" == cwd / "verify.sh"
+print("required workflow body: path, required mode and exit 23 preserved")
+PY
+	[ "$status" -eq 0 ]
+}
+
 # Only this test interface selects a sibling; there is no implicit lookup or
 # network fetch. A supplied but unusable checkout is always an error.
 _storage_check() {

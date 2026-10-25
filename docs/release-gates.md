@@ -25,6 +25,37 @@ inspection. The repository-proof gate runs this entrypoint from the exact checko
 records only the combined verification hash, clean-worktree state and commit
 identity.
 
+To also compare storage with an explicit stage-2 checkout, run:
+
+```bash
+HYPERLAB_ANSIBLE_REPO=/path/to/hyperlab-ansible \
+  CROSS_REPO_STORAGE_REQUIRED=1 bash verify.sh
+```
+
+This runs the actual bootstrap writer for both topologies in temporary fixtures,
+then passes each file to that checkout's `tools/bootstrap_storage_guard.py`
+validate CLI with independent synthetic `findmnt` JSON. Only the guard's existing
+fixture ownership exception is enabled; regular-file, mode and value checks
+remain active. The complete `allowed_storage_topologies` mapping in the actual
+`release/acceptance.v2.yml` must equal the successful guard results projected onto
+mapper, filesystem root and subvolume. Both compared Git revisions are logged.
+The explicitly selected checkout root is resolved before reading its inputs;
+redirected files or directories within it are refused. Python bytecode writes
+are disabled for consumer execution.
+
+Without a sibling request, standalone verification visibly reports
+`SKIPPED - nothing cross-repository was proved`. Required mode without a sibling,
+an explicit empty/missing path, missing or malformed inputs, a consumer refusal,
+or manifest disagreement fails verification. Tests never fetch a repository.
+
+CI retains the full standalone job and adds a required storage job on pushes
+and pull requests, checking out the producer and `hyperlab-ansible` `main` into
+separate directories and running the same verifier with both variables set.
+Those revisions are integration inputs, not a frozen release pair. This proves
+only storage agreement with the v2 manifest; it does not qualify its gate list
+as v1 or prove encryption, NOCOW, keyfile unlocking or an installed mount.
+The disposable installation and both physical gates below remain pending.
+
 ## Gate 2: disposable two-disk VM
 
 Run this inside an Arch-capable throwaway VM:

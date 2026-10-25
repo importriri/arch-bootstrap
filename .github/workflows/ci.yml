@@ -13,3 +13,22 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck bats cryptsetup-bin python3-yaml
       - name: Run the complete local verification entrypoint
         run: bash verify.sh
+  storage-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: arch-bootstrap
+      - uses: actions/checkout@v4
+        with:
+          repository: importriri/hyperlab-ansible
+          ref: main
+          path: hyperlab-ansible
+      - name: Install the fixed verification toolchain
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck bats cryptsetup-bin python3-yaml
+      - name: Verify the actual storage producer and consumers
+        working-directory: arch-bootstrap
+        env:
+          HYPERLAB_ANSIBLE_REPO: ${{ github.workspace }}/hyperlab-ansible
+          CROSS_REPO_STORAGE_REQUIRED: "1"
+        run: bash verify.sh
