@@ -135,8 +135,74 @@ During these checks the unchanged writer revision was
 the producer worktree. Revision output identifies integration inputs and does
 not freeze or promote a hardware campaign. No new hardware observation is made.
 
+## A contract that could not be written still reported success
+
+Found on 2026-10-25 by reading the hand-off path: `write_storage_contract`
+ran `cat > "$contract_path" <<EOF` and never checked it. `bootstrap_main`
+calls the writer as `write_storage_contract "$topology" || return 1`; inside
+an OR list errexit is off, so `set -e` does not stop at the failed `cat`.
+The `chown` and `chmod` after it succeed on whatever the failed write left
+(even on a directory), and the run printed both markers:
+
+```
+bootstrap: line 121: .../mnt/etc/privatestack/bootstrap-storage.yml: Is a directory
+[OK] stage-2 storage contract written: /etc/privatestack/bootstrap-storage.yml
+[OK] arch-bootstrap complete — storage is ready for hyperlab-ansible
+```
+
+That is how the whole-entrypoint test's output ends against the writer of
+`af90303` (paths shortened), with exit status 0, for both topologies and
+for both the open and the partial write failure. The success path then disables the EXIT cleanup, so
+a run with no contract, or a truncated one, also left everything mounted and
+open as if it had finished.
+
+The writer now checks the heredoc's status, with the same `|| { echo ...;
+return 1; }` the installer uses for its own files, and fails with
+`Could not write the bootstrap storage contract`. Neither marker is printed,
+the run exits nonzero and its EXIT trap releases what it adopted from the
+installer, newest mount first, then `cryptvm` (two disks) and `cryptroot`.
+
+There is no rollback and no atomic replacement: a writer that stopped after
+a prefix leaves that partial file on the target root filesystem, and nothing
+here promises anything after a power loss. A run that did not print
+`[OK] arch-bootstrap complete` is a failed installation, whatever file it
+left behind.
+
+The regressions, both topologies each, all through the real writer:
+
+- a directory at the destination, so the open fails (as root too);
+- a `cat` stub that reads the whole heredoc, writes its first 32 bytes and
+  exits 74, so the failure happens at the write, past `install`;
+- the whole entrypoint, executed with its real entry guard, EXIT trap,
+  `bootstrap_main` and writer. Only the executed installer is replaced, by
+  a fixture that leaves the layout in a mount table and the mappers as files
+  inside the test directory; `findmnt`, `lsattr`, `umount`, `cryptsetup`,
+  `install` and `chown` are PATH stubs. The cleanup argv must equal the
+  reverse layout written out in the test, and an unrelated mount and mapper
+  must survive. The successful runs release nothing.
+
+Directory, ownership and mode failures still refuse with their own
+diagnostics, and the dry run now has its own `/mnt` in the test, so its
+check that it wrote no hand-off looks at the real destination. Run them with:
+
+```bash
+bats --filter 'contract refuses|failures still propagate|bootstrap refuses|bootstrap keeps|dry run' \
+  tests/bootstrap-contract.bats
+```
+
+Each mutation was made in a temporary copy (`bootstrap`, `installer` and
+`tests/` copied to a scratch directory, the shipped source untouched),
+observed red, restored from its saved copy and observed green:
+
+| Mutation of the copy's `bootstrap` | `--filter` | Observed |
+| --- | --- | --- |
+| Drop the `\|\| { ...; return 1; }` after the heredoc | `contract refuses an open failure\|contract refuses a partial writer failure` | 4 of 4 red at the status check: exit 0 and the stage-2 marker, both topologies; restored 4 green |
+| `write_storage_contract "$topology" \|\| :` in `bootstrap_main` | `bootstrap refuses .* and cleans up adopted resources` | 4 of 4 red at the exit status, with the completion marker printed; restored 4 green |
+| `trap - EXIT` just before the writer | same | 4 of 4 red at the cleanup argv (none ran); restored 4 green |
+
 ## The lesson
 
 A file written for another program is tested by reading it the way that
 program reads it. A text comparison pins whatever the writer emits, wrong
-or right.
+or right. And a write is a command like any other: inside an OR list
+errexit does not see it, so its status is checked where it happens.

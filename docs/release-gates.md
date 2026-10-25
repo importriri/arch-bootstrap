@@ -9,6 +9,9 @@ commits and sanitized hardware evidence.
 - Nitro 5: bootstrap-to-stage-2 host path passed.
 - Nitro frozen clean-install release evidence: pending.
 - Predator clean-install and portability evidence: pending.
+- Refusal of a storage contract that cannot be written: software-verified only.
+  No installation has run this writer yet; the frozen clean installation in
+  gate 3 is its first hardware proof and is pending.
 
 ## Gate 1: software verification
 
@@ -56,6 +59,24 @@ only storage agreement with the v2 manifest; it does not qualify its gate list
 as v1 or prove encryption, NOCOW, keyfile unlocking or an installed mount.
 The disposable installation and both physical gates below remain pending.
 
+### A failed storage hand-off
+
+If `/etc/privatestack/bootstrap-storage.yml` cannot be created, opened or
+completely written on the target, `bootstrap` stops with
+`Could not write the bootstrap storage contract` and a nonzero exit. It prints
+neither `[OK] stage-2 storage contract written` nor
+`[OK] arch-bootstrap complete`, and its exit cleanup unmounts the layout this
+run mounted, newest first, then closes `cryptvm` (two disks) and `cryptroot`.
+Nothing it did not open is touched. Directory, ownership and mode failures stop
+it the same way, each with its own message.
+
+There is no rollback and no atomic replacement: an interrupted write can leave a
+partial contract on the target root filesystem, and no claim is made about a
+power loss. A run that does not end with `[OK] arch-bootstrap complete` is a
+failed installation, whatever file it left. `tests/bootstrap-contract.bats`
+proves this for both topologies through the real writer and the real entrypoint
+with stubbed storage commands; it is not a hardware observation.
+
 ## Gate 2: disposable two-disk VM
 
 Run this inside an Arch-capable throwaway VM:
@@ -87,7 +108,9 @@ failure or missing final marker is not a pass.
 5. complete Secure Boot enrollment;
 6. boot `linux-hardened` twice;
 7. verify LUKS2, Btrfs mounts, `+C`, fstab, crypttab, keyfile mode, networking and
-   the stage-2 contract;
+   the stage-2 contract (step 4 must have ended with `[OK] arch-bootstrap
+   complete`; the contract is a regular root:root 0644 file that parses and that
+   the stage-2 guard accepts);
 8. run the exact selected `hyperlab-ansible` host campaign;
 9. record sanitized scalar evidence through the hardware runner.
 
