@@ -693,18 +693,22 @@ _bootstrap_keeps() {
 	[ "$output" = "0" ]
 }
 
-@test "required storage CI executes both checkouts and propagates verifier failure" {
-	run python3 - "$REPO" "$BATS_TEST_TMPDIR/workflow" <<'PY'
+# Execute only the parsed verifier body, with local checkout directories and a
+# recording verifier. PARENT selects absent, matching or conflicting inputs in
+# the caller; the workflow must supply its own values in every case.
+_storage_workflow_case() {
+	local workflow="$1" parent="$2"
+	python3 - "$workflow" "$BATS_TEST_TMPDIR/workflow-$parent" "$parent" <<'PY' || return 1
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
-from pathlib import Path
 
 import yaml
 
-repo, box = map(Path, sys.argv[1:])
-workflow = yaml.safe_load((repo / ".github/workflows/ci.yml").read_text())
+workflow_path, box = map(Path, sys.argv[1:3])
+workflow = yaml.safe_load(workflow_path.read_text())
 # PyYAML's YAML 1.1 loader reads the unquoted GitHub Actions `on` as True.
 triggers = workflow.get("on", workflow.get(True))
 assert set(triggers) == {"push", "pull_request"}, triggers
@@ -752,25 +756,98 @@ exit "${VERIFY_RC}"
 assert len(checkouts) == 2 and len(verifiers) == 1, (checkouts, verifiers)
 step = verifiers[0]
 assert step.get("shell", "bash") == "bash"
+expected = box / next(item["path"] for item in checkouts if item.get("repository"))
+parent = sys.argv[3]
+if parent == "absent":
+    os.environ.pop("CROSS_REPO_STORAGE_REQUIRED", None)
+    os.environ.pop("HYPERLAB_ANSIBLE_REPO", None)
+elif parent == "matching":
+    os.environ.update(CROSS_REPO_STORAGE_REQUIRED="1", HYPERLAB_ANSIBLE_REPO=str(expected))
+elif parent == "conflicting":
+    os.environ.update(CROSS_REPO_STORAGE_REQUIRED="0",
+                      HYPERLAB_ANSIBLE_REPO=str(box / "wrong-sibling"))
+else:
+    raise ValueError(f"unknown parent environment: {parent}")
+record_path = box / "record"
 for code in (0, 23):
-    env = dict(os.environ, GITHUB_WORKSPACE=str(box), RECORD=str(box / "record"),
+    env = dict(os.environ, GITHUB_WORKSPACE=str(box), RECORD=str(record_path),
                VERIFY_RC=str(code))
+    env.pop("HYPERLAB_ANSIBLE_REPO", None)
+    env.pop("CROSS_REPO_STORAGE_REQUIRED", None)
     for key, value in {**job.get("env", {}), **step.get("env", {})}.items():
         env[key] = str(value).replace("${{ github.workspace }}", str(box))
     cwd = box / step.get("working-directory", ".")
+    record_path.unlink(missing_ok=True)
     result = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail",
                              "-c", step["run"]], cwd=cwd, env=env, check=False)
     assert result.returncode == code, (code, result.returncode)
-    record = json.loads((box / "record").read_text())
+    record = json.loads(record_path.read_text())
+    assert record["required"] is not None, "missing workflow input: CROSS_REPO_STORAGE_REQUIRED"
     assert record["required"] == "1", record
-    sibling = Path(record["sibling"])
-    expected = next(item["path"] for item in checkouts if item.get("repository"))
-    assert sibling == box / expected, record
+    assert record["sibling"] is not None, "missing workflow input: HYPERLAB_ANSIBLE_REPO"
+    sibling = Path(record["sibling"]).resolve(strict=True)
+    assert sibling == expected.resolve(strict=True), record
     assert sibling.is_dir(), record
-    assert Path(record["cwd"]) / "verify.sh" == cwd / "verify.sh"
+    assert Path(record["cwd"]) == cwd.resolve(strict=True), record
 print("required workflow body: path, required mode and exit 23 preserved")
 PY
+}
+
+@test "required storage CI executes both checkouts and propagates verifier failure" {
+	run _storage_workflow_case "$REPO/.github/workflows/ci.yml" absent
 	[ "$status" -eq 0 ]
+}
+
+@test "required storage CI supplies both inputs with matching parent values" {
+	run _storage_workflow_case "$REPO/.github/workflows/ci.yml" matching
+	[ "$status" -eq 0 ]
+}
+
+@test "required storage CI supplies both inputs with conflicting parent values" {
+	run _storage_workflow_case "$REPO/.github/workflows/ci.yml" conflicting
+	[ "$status" -eq 0 ]
+}
+
+# Delete a setting in a temporary parsed workflow, then execute the same fixture
+# as the clean control. Only the named missing-input assertion proves refusal.
+_storage_workflow_refuses_input() {
+	local setting="$1" parent="$2" workflow="$BATS_TEST_TMPDIR/without-input.yml"
+	python3 - "$REPO/.github/workflows/ci.yml" "$workflow" "$setting" <<'PY' || return 1
+from pathlib import Path
+import sys
+
+import yaml
+
+source, target = map(Path, sys.argv[1:3])
+setting = sys.argv[3]
+workflow = yaml.safe_load(source.read_text())
+job = workflow["jobs"]["storage-contract"]
+step, = [item for item in job["steps"] if "verify.sh" in item.get("run", "")]
+environments = [job.get("env", {}), step.get("env", {})]
+assert sum(setting in env for env in environments) == 1, setting
+for env in environments:
+    env.pop(setting, None)
+target.write_text(yaml.safe_dump(workflow))
+PY
+	run _storage_workflow_case "$workflow" "$parent"
+	[ "$status" -eq 1 ]
+	[ "${lines[-1]}" = "AssertionError: missing workflow input: $setting" ]
+}
+
+@test "required storage CI refuses a missing required flag with absent parent inputs" {
+	_storage_workflow_refuses_input CROSS_REPO_STORAGE_REQUIRED absent
+}
+
+@test "required storage CI refuses a missing required flag with matching parent inputs" {
+	_storage_workflow_refuses_input CROSS_REPO_STORAGE_REQUIRED matching
+}
+
+@test "required storage CI refuses a missing sibling path with absent parent inputs" {
+	_storage_workflow_refuses_input HYPERLAB_ANSIBLE_REPO absent
+}
+
+@test "required storage CI refuses a missing sibling path with matching parent inputs" {
+	_storage_workflow_refuses_input HYPERLAB_ANSIBLE_REPO matching
 }
 
 # Only this test interface selects a sibling; there is no implicit lookup or

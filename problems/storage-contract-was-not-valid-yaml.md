@@ -135,6 +135,76 @@ During these checks the unchanged writer revision was
 the producer worktree. Revision output identifies integration inputs and does
 not freeze or promote a hardware campaign. No new hardware observation is made.
 
+### The workflow fixture inherited its required inputs
+
+The workflow already supplies both storage inputs, but its recording-verifier
+fixture copied `os.environ` before applying the parsed job and step settings.
+If the caller exported `CROSS_REPO_STORAGE_REQUIRED=1`, deleting that setting
+from a workflow copy could still pass. An inherited `HYPERLAB_ANSIBLE_REPO`
+pointing at the expected local checkout could conceal the same deletion.
+
+Each verifier invocation now copies the ordinary environment, removes both
+storage inputs, then applies the workflow settings, with step values taking
+precedence over job values as before. Unrelated inputs such as `PATH` survive.
+The fixture checks the required flag, resolved sibling directory and working
+directory independently, with exits 0 and 23. It deletes the recording file
+before each invocation so an earlier observation cannot satisfy a later check.
+
+Normal Bats discovery runs three clean controls (parent inputs absent, matching
+and conflicting) and four deletion cases (each setting removed separately,
+with parent inputs absent and matching). All use the same executed fixture.
+A deletion passes its negative test only with the exact
+`missing workflow input: CROSS_REPO_STORAGE_REQUIRED` or
+`missing workflow input: HYPERLAB_ANSIBLE_REPO` assertion. A parse error, missing
+directory or missing observation does not qualify. Before adding the two
+scrubs, both matching-parent deletion tests were red because the weakened
+workflows incorrectly succeeded; the absent-parent cases already detected them.
+
+Run the seven workflow cases with either caller environment:
+
+```bash
+env -u HYPERLAB_ANSIBLE_REPO -u CROSS_REPO_STORAGE_REQUIRED \
+  bats --print-output-on-failure --filter 'required storage CI' tests/bootstrap-contract.bats
+HYPERLAB_ANSIBLE_REPO=/path/to/hyperlab-ansible CROSS_REPO_STORAGE_REQUIRED=1 \
+  bats --print-output-on-failure --filter 'required storage CI' tests/bootstrap-contract.bats
+```
+
+The following mutations were observed in isolated workflow/test copies, with
+saved copies restored between cases. Each check ran with both caller variables
+unset and with both supplied; the clean controls also construct the exact
+matching and conflicting parent values themselves. No mutation stayed green.
+
+| Mutation | Predicted check and observed result |
+| --- | --- |
+| Delete the workflow's required-mode setting | All three clean controls red with `missing workflow input: CROSS_REPO_STORAGE_REQUIRED`, including parent flag `1`; restored green |
+| Delete the workflow's sibling setting | All three clean controls red with `missing workflow input: HYPERLAB_ANSIBLE_REPO`, including the expected fixture path in the parent; restored green |
+| Remove only the required-mode environment scrub from the test copy | Matching-parent required-flag deletion regression red because the weakened workflow succeeded; restored green |
+| Remove only the sibling environment scrub from the test copy | Matching-parent sibling-path deletion regression red because the weakened workflow succeeded; restored green |
+| Append `\|\| exit 0` to the workflow verifier body | All three clean controls red with expected/actual exits `(23, 0)`; restored green |
+| Record only exit 0, leaving exit 23 without a fresh observation | All three clean controls red with `FileNotFoundError` at the second invocation's recording file; restored green |
+
+For the workflow deletions, swallowed exit and stale recording, the mutation
+command in the temporary copy was:
+
+```bash
+bats --print-output-on-failure --filter 'required storage CI (executes|supplies)' tests/bootstrap-contract.bats
+```
+
+For the scrub mutations, the corresponding commands were:
+
+```bash
+bats --print-output-on-failure --filter 'required storage CI refuses a missing required flag with matching parent inputs' tests/bootstrap-contract.bats
+bats --print-output-on-failure --filter 'required storage CI refuses a missing sibling path with matching parent inputs' tests/bootstrap-contract.bats
+```
+
+All seven focused cases passed in both caller modes. Both complete verifier
+runs also passed: Bash syntax, ShellCheck, all 77 discovered Bats cases (four
+explicit dependent skips only in standalone mode) and the real temporary-file
+LUKS2 header check. Required mode compared both topologies with the actual guard
+and manifest. Sibling metadata, including existing bytecode caches, was unchanged.
+This is software-verified fixture isolation; hosted CI and the frozen Nitro and
+Predator installation/storage gates still need their own evidence.
+
 ## A contract that could not be written still reported success
 
 Found on 2026-10-25 by reading the hand-off path: `write_storage_contract`
