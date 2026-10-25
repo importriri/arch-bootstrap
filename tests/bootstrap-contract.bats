@@ -148,43 +148,54 @@ _writer_case() (
 	return "$rc"
 )
 
-@test "the contract refuses an open failure at its destination, both topologies" {
-	local topology
-	for topology in single-disk dedicated-disk; do
-		run _writer_case "$topology" open
-		[ "$status" -eq 1 ]
-		[ "${lines[-1]}" = "status=1" ]
-		[[ "$output" == *"Could not write the bootstrap storage contract"* ]]
-		[[ "$output" != *"stage-2 storage contract written"* ]]
-		[ -d "$MOUNT_ROOT$BOOTSTRAP_STORAGE_CONTRACT" ]
-		#refused at the write itself: no chown or chmod ran after it
-		[ "$(< "$BATS_TEST_TMPDIR/calls")" = "install -d -m 0755 -o root -g root $MOUNT_ROOT/etc/privatestack" ]
-	done
+# _writer_refuses_open TOPOLOGY: the write is refused at the write itself,
+# with no chown or chmod after it.
+_writer_refuses_open() {
+	run _writer_case "$1" open
+	[ "$status" -eq 1 ]
+	[ "${lines[-1]}" = "status=1" ]
+	[[ "$output" == *"Could not write the bootstrap storage contract"* ]]
+	[[ "$output" != *"stage-2 storage contract written"* ]]
+	[ -d "$MOUNT_ROOT$BOOTSTRAP_STORAGE_CONTRACT" ]
+	[ "$(< "$BATS_TEST_TMPDIR/calls")" = "install -d -m 0755 -o root -g root $MOUNT_ROOT/etc/privatestack" ]
 }
 
-@test "the contract refuses a partial writer failure, both topologies" {
-	local topology vm_partlabel contract
-	contract="$MOUNT_ROOT$BOOTSTRAP_STORAGE_CONTRACT"
-	for topology in single-disk dedicated-disk; do
-		run _writer_case "$topology" partial
-		[ "$status" -eq 1 ]
-		[ "${lines[-1]}" = "status=1" ]
-		[[ "$output" == *"No space left on device"* ]]
-		[[ "$output" == *"Could not write the bootstrap storage contract"* ]]
-		[[ "$output" != *"stage-2 storage contract written"* ]]
-		#the writer was reached past install, with the complete heredoc
-		vm_partlabel=null
-		[[ $topology == single-disk ]] || vm_partlabel=ARCH_VM
-		run contract_as_parsed "$BATS_TEST_TMPDIR/consumed"
-		[ "$status" -eq 0 ]
-		[[ "$output" == *"topology='$topology'"* ]]
-		[ "$(tail -n 1 "$BATS_TEST_TMPDIR/consumed")" = "  vm_partlabel: $vm_partlabel" ]
-		#it left the 32-byte prefix it wrote, and nothing ran after it
-		[ -f "$contract" ]
-		[ "$(stat -c %s "$contract")" = 32 ]
-		[ "$(< "$contract")" = "$(head -c 32 "$BATS_TEST_TMPDIR/consumed")" ]
-		[ "$(< "$BATS_TEST_TMPDIR/calls")" = "install -d -m 0755 -o root -g root $MOUNT_ROOT/etc/privatestack" ]
-	done
+# _writer_refuses_partial TOPOLOGY: the writer was reached past install with
+# the complete heredoc, left the 32-byte prefix it wrote, and nothing ran
+# after it.
+_writer_refuses_partial() {
+	local topology="$1" vm_partlabel=null contract="$MOUNT_ROOT$BOOTSTRAP_STORAGE_CONTRACT"
+	[[ $topology == single-disk ]] || vm_partlabel=ARCH_VM
+	run _writer_case "$topology" partial
+	[ "$status" -eq 1 ]
+	[ "${lines[-1]}" = "status=1" ]
+	[[ "$output" == *"No space left on device"* ]]
+	[[ "$output" == *"Could not write the bootstrap storage contract"* ]]
+	[[ "$output" != *"stage-2 storage contract written"* ]]
+	run contract_as_parsed "$BATS_TEST_TMPDIR/consumed"
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"topology='$topology'"* ]]
+	[ "$(tail -n 1 "$BATS_TEST_TMPDIR/consumed")" = "  vm_partlabel: $vm_partlabel" ]
+	[ -f "$contract" ]
+	[ "$(stat -c %s "$contract")" = 32 ]
+	[ "$(< "$contract")" = "$(head -c 32 "$BATS_TEST_TMPDIR/consumed")" ]
+	[ "$(< "$BATS_TEST_TMPDIR/calls")" = "install -d -m 0755 -o root -g root $MOUNT_ROOT/etc/privatestack" ]
+}
+
+@test "single-disk contract refuses an open failure at its destination" {
+	_writer_refuses_open single-disk
+}
+
+@test "dedicated-disk contract refuses an open failure at its destination" {
+	_writer_refuses_open dedicated-disk
+}
+
+@test "single-disk contract refuses a partial writer failure" {
+	_writer_refuses_partial single-disk
+}
+
+@test "dedicated-disk contract refuses a partial writer failure" {
+	_writer_refuses_partial dedicated-disk
 }
 
 @test "contract directory, ownership and mode failures still propagate" {
@@ -585,50 +596,70 @@ _handoff_cleanup_expected() {
 	echo "cryptsetup close cryptroot"
 }
 
-@test "bootstrap refuses a contract write failure and cleans up adopted resources" {
-	local box="$BATS_TEST_TMPDIR/handoff" topology failure
-	for topology in single-disk dedicated-disk; do
-		for failure in open partial; do
-			rm -rf "$box" "${BATS_TEST_TMPDIR:?}/mnt"
-			_bootstrap_handoff "$topology" "$failure"
-			[ "$status" -eq 1 ]
-			[ -f "$box/installer-argv" ]
-			[[ "$output" == *"[OK] VM storage verified: topology=$topology"* ]]
-			[[ "$output" == *"Could not write the bootstrap storage contract"* ]]
-			[[ "$output" != *"stage-2 storage contract written"* ]]
-			[[ "$output" != *"arch-bootstrap complete"* ]]
-			[ "$(< "$box/cleanup")" = "$(_handoff_cleanup_expected "$topology")" ]
-			#only this run's: the unrelated mount and mapper are kept
-			[ "$(< "$box/mounts")" = /srv/unrelated ]
-			[ "$(ls -A "$box/mapper")" = unrelated ]
-			if [[ $failure == partial ]]; then
-				[ "$(stat -c %s "$BATS_TEST_TMPDIR/mnt$BOOTSTRAP_STORAGE_CONTRACT")" = 32 ]
-			fi
-		done
-	done
+# _bootstrap_refuses TOPOLOGY FAILURE: a failed hand-off exits nonzero with
+# neither marker and releases exactly what this run adopted.
+_bootstrap_refuses() {
+	local topology="$1" failure="$2" box="$BATS_TEST_TMPDIR/handoff"
+	_bootstrap_handoff "$topology" "$failure"
+	[ "$status" -eq 1 ]
+	[ -f "$box/installer-argv" ]
+	[[ "$output" == *"[OK] VM storage verified: topology=$topology"* ]]
+	[[ "$output" == *"Could not write the bootstrap storage contract"* ]]
+	[[ "$output" != *"stage-2 storage contract written"* ]]
+	[[ "$output" != *"arch-bootstrap complete"* ]]
+	[ "$(< "$box/cleanup")" = "$(_handoff_cleanup_expected "$topology")" ]
+	#only this run's: the unrelated mount and mapper are kept
+	[ "$(< "$box/mounts")" = /srv/unrelated ]
+	[ "$(ls -A "$box/mapper")" = unrelated ]
+	if [[ $failure == partial ]]; then
+		[ "$(stat -c %s "$BATS_TEST_TMPDIR/mnt$BOOTSTRAP_STORAGE_CONTRACT")" = 32 ]
+	fi
 }
 
-@test "bootstrap keeps adopted resources after a contract it wrote, both topologies" {
-	local box="$BATS_TEST_TMPDIR/handoff" topology mappers
-	for topology in single-disk dedicated-disk; do
-		rm -rf "$box" "${BATS_TEST_TMPDIR:?}/mnt"
-		_bootstrap_handoff "$topology" none
-		[ "$status" -eq 0 ]
-		[[ "$output" == *"[OK] stage-2 storage contract written: $BOOTSTRAP_STORAGE_CONTRACT"* ]]
-		[[ "$output" == *"[OK] arch-bootstrap complete"* ]]
-		[ -z "$(< "$box/cleanup")" ]
-		[ "$(wc -l < "$box/mounts")" = 9 ]
-		mappers=$'cryptroot\nunrelated'
-		[[ $topology == single-disk ]] || mappers=$'cryptroot\ncryptvm\nunrelated'
-		[ "$(ls -A "$box/mapper")" = "$mappers" ]
-		run contract_as_parsed "$BATS_TEST_TMPDIR/mnt$BOOTSTRAP_STORAGE_CONTRACT"
-		[ "$status" -eq 0 ]
-		[[ "$output" == *"topology='$topology'"* ]]
-		[ "$(stat -c %a "$BATS_TEST_TMPDIR/mnt$BOOTSTRAP_STORAGE_CONTRACT")" = 644 ]
-		if [[ $topology == dedicated-disk ]]; then
-			[ "$(stat -c %a "$BATS_TEST_TMPDIR/mnt$VM_KEYFILE")" = 400 ]
-		fi
-	done
+# _bootstrap_keeps TOPOLOGY: a written hand-off completes and releases nothing.
+_bootstrap_keeps() {
+	local topology="$1" box="$BATS_TEST_TMPDIR/handoff" mappers
+	local contract="$BATS_TEST_TMPDIR/mnt$BOOTSTRAP_STORAGE_CONTRACT"
+	mappers=$'cryptroot\nunrelated'
+	[[ $topology == single-disk ]] || mappers=$'cryptroot\ncryptvm\nunrelated'
+	_bootstrap_handoff "$topology" none
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"[OK] stage-2 storage contract written: $BOOTSTRAP_STORAGE_CONTRACT"* ]]
+	[[ "$output" == *"[OK] arch-bootstrap complete"* ]]
+	[ -z "$(< "$box/cleanup")" ]
+	[ "$(wc -l < "$box/mounts")" = 9 ]
+	[ "$(ls -A "$box/mapper")" = "$mappers" ]
+	run contract_as_parsed "$contract"
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"topology='$topology'"* ]]
+	[ "$(stat -c %a "$contract")" = 644 ]
+	if [[ $topology == dedicated-disk ]]; then
+		[ "$(stat -c %a "$BATS_TEST_TMPDIR/mnt$VM_KEYFILE")" = 400 ]
+	fi
+}
+
+@test "bootstrap refuses a single-disk open failure and cleans up adopted resources" {
+	_bootstrap_refuses single-disk open
+}
+
+@test "bootstrap refuses a single-disk partial writer failure and cleans up adopted resources" {
+	_bootstrap_refuses single-disk partial
+}
+
+@test "bootstrap refuses a dedicated-disk open failure and cleans up adopted resources" {
+	_bootstrap_refuses dedicated-disk open
+}
+
+@test "bootstrap refuses a dedicated-disk partial writer failure and cleans up adopted resources" {
+	_bootstrap_refuses dedicated-disk partial
+}
+
+@test "bootstrap keeps adopted resources after a single-disk contract it wrote" {
+	_bootstrap_keeps single-disk
+}
+
+@test "bootstrap keeps adopted resources after a dedicated-disk contract it wrote" {
+	_bootstrap_keeps dedicated-disk
 }
 
 @test "the refusal names the mounts actually left, not a /mnt that is not mounted" {
