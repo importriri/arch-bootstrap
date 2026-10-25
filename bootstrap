@@ -118,7 +118,10 @@ write_storage_contract() {
 
 	install -d -m 0755 -o root -g root "$(dirname "$contract_path")" \
 		|| { echo "Could not create the bootstrap contract directory" >&2; return 1; }
-	cat > "$contract_path" <<EOF
+	# bootstrap_main calls this in an OR list, where errexit is off: a failed
+	# open or write is checked here, as chown and chmod succeed on what it left.
+	cat > "$contract_path" <<EOF \
+		|| { echo "Could not write the bootstrap storage contract" >&2; return 1; }
 # Written by arch-bootstrap after the mounted storage passed post-conditions.
 schema_version: 1
 vm_store:

@@ -108,6 +108,102 @@ vm_partlabel='ARCH_VM'" ]
 	[ "$(stat -c %a "$contract")" = 644 ]
 }
 
+# _writer_case TOPOLOGY FAILURE: the real sourced writer, in the OR list
+# bootstrap_main calls it from, inside a subshell so its stubs end with it.
+# FAILURE is open (a directory at the destination: no open for writing, as
+# root too), partial (a cat that reads the whole heredoc, writes its first 32
+# bytes and fails as a full disk does), install, chown or chmod. Each metadata
+# stub appends its argv to $BATS_TEST_TMPDIR/calls.
+_writer_case() (
+	local topology="$1" failure="$2" calls="$BATS_TEST_TMPDIR/calls" rc=0
+	install() {
+		echo "install $*" >> "$calls"
+		[[ $failure != install ]] || return 1
+		command mkdir -p "${*: -1}"
+	}
+	chown() { echo "chown $*" >> "$calls"; [[ $failure != chown ]]; }
+	chmod() {
+		echo "chmod $*" >> "$calls"
+		[[ $failure != chmod ]] || return 1
+		command chmod "$@"
+	}
+	if [[ $failure == partial ]]; then
+		cat() {
+			local text
+			IFS= read -r -d '' text || :
+			printf '%s' "$text" > "$BATS_TEST_TMPDIR/consumed"
+			printf '%s' "${text:0:32}"
+			echo "cat: write error: No space left on device" >&2
+			return 74
+		}
+	fi
+	[[ $MOUNT_ROOT == "${BATS_TEST_TMPDIR:?}"/* ]] || return 1
+	rm -rf "$MOUNT_ROOT" "$calls" "$BATS_TEST_TMPDIR/consumed"
+	mkdir -p "$MOUNT_ROOT"
+	if [[ $failure == open ]]; then
+		mkdir -p "$MOUNT_ROOT$BOOTSTRAP_STORAGE_CONTRACT"
+	fi
+	write_storage_contract "$topology" || rc=$?
+	echo "status=$rc"
+	return "$rc"
+)
+
+@test "the contract refuses an open failure at its destination, both topologies" {
+	local topology
+	for topology in single-disk dedicated-disk; do
+		run _writer_case "$topology" open
+		[ "$status" -eq 1 ]
+		[ "${lines[-1]}" = "status=1" ]
+		[[ "$output" == *"Could not write the bootstrap storage contract"* ]]
+		[[ "$output" != *"stage-2 storage contract written"* ]]
+		[ -d "$MOUNT_ROOT$BOOTSTRAP_STORAGE_CONTRACT" ]
+		#refused at the write itself: no chown or chmod ran after it
+		[ "$(< "$BATS_TEST_TMPDIR/calls")" = "install -d -m 0755 -o root -g root $MOUNT_ROOT/etc/privatestack" ]
+	done
+}
+
+@test "the contract refuses a partial writer failure, both topologies" {
+	local topology vm_partlabel contract
+	contract="$MOUNT_ROOT$BOOTSTRAP_STORAGE_CONTRACT"
+	for topology in single-disk dedicated-disk; do
+		run _writer_case "$topology" partial
+		[ "$status" -eq 1 ]
+		[ "${lines[-1]}" = "status=1" ]
+		[[ "$output" == *"No space left on device"* ]]
+		[[ "$output" == *"Could not write the bootstrap storage contract"* ]]
+		[[ "$output" != *"stage-2 storage contract written"* ]]
+		#the writer was reached past install, with the complete heredoc
+		vm_partlabel=null
+		[[ $topology == single-disk ]] || vm_partlabel=ARCH_VM
+		run contract_as_parsed "$BATS_TEST_TMPDIR/consumed"
+		[ "$status" -eq 0 ]
+		[[ "$output" == *"topology='$topology'"* ]]
+		[ "$(tail -n 1 "$BATS_TEST_TMPDIR/consumed")" = "  vm_partlabel: $vm_partlabel" ]
+		#it left the 32-byte prefix it wrote, and nothing ran after it
+		[ -f "$contract" ]
+		[ "$(stat -c %s "$contract")" = 32 ]
+		[ "$(< "$contract")" = "$(head -c 32 "$BATS_TEST_TMPDIR/consumed")" ]
+		[ "$(< "$BATS_TEST_TMPDIR/calls")" = "install -d -m 0755 -o root -g root $MOUNT_ROOT/etc/privatestack" ]
+	done
+}
+
+@test "contract directory, ownership and mode failures still propagate" {
+	local failure diagnostic topology
+	while IFS='|' read -r failure diagnostic; do
+		for topology in single-disk dedicated-disk; do
+			run _writer_case "$topology" "$failure"
+			[ "$status" -eq 1 ]
+			[ "${lines[-1]}" = "status=1" ]
+			[[ "$output" == *"$diagnostic"* ]]
+			[[ "$output" != *"stage-2 storage contract written"* ]]
+		done
+	done <<'CASES'
+install|Could not create the bootstrap contract directory
+chown|Could not own the bootstrap storage contract
+chmod|Could not protect the bootstrap storage contract
+CASES
+}
+
 @test "dedicated key finalization requires a regular keyfile and mode 0400" {
 	mkdir -p "$(dirname "$MOUNT_ROOT$VM_KEYFILE")"
 	: > "$MOUNT_ROOT$VM_KEYFILE"
@@ -252,6 +348,8 @@ vm_partlabel='ARCH_VM'" ]
 # Run the whole entrypoint, as an operator would, in dry run: real bootstrap
 # and installer, the logging stubs for every external tool, a lsblk that
 # shows one disk, and only the root and UEFI guards neutralized in a copy.
+# The copy's /mnt is $BATS_TEST_TMPDIR/mnt, so a hand-off the dry run wrote
+# would land where the test can see it.
 _dry_run_bootstrap() {
 	local box="$BATS_TEST_TMPDIR/box"
 	mkdir -p "$box/bin"
@@ -259,9 +357,12 @@ _dry_run_bootstrap() {
 	sed -e 's/^check_root() {$/check_root() { echo "[TEST] root guard skipped" >\&2; return 0; }\n_real_check_root() {/' \
 	    -e 's/^check_uefi() {$/check_uefi() { echo "[TEST] UEFI guard skipped" >\&2; return 0; }\n_real_check_uefi() {/' \
 	    -e "s|/dev/mapper/|$box/mapper/|g" \
+	    -e "s|\"/mnt\"|\"$BATS_TEST_TMPDIR/mnt\"|g" \
+	    -e "s|\"/mnt/.btrfs-top\"|\"$BATS_TEST_TMPDIR/mnt/.btrfs-top\"|g" \
 	    "$REPO/installer" > "$box/installer"
 	cp "$REPO/bootstrap" "$box/bootstrap"
 	grep -q 'root guard skipped' "$box/installer"
+	grep -q "MOUNT_ROOT=\"$BATS_TEST_TMPDIR/mnt\"" "$box/installer"
 	grep -q 'UEFI guard skipped' "$box/installer"
 	grep -q "$box/mapper/" "$box/installer"
 	#findmnt lists / and, when a test sets STUB_MOUNTS, those targets; with
@@ -300,7 +401,12 @@ STUB
 	_dry_run_bootstrap
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"[DRY-RUN] real installation would write"* ]]
+	[[ "$output" != *"stage-2 storage contract written"* ]]
+	[[ "$output" != *"arch-bootstrap complete"* ]]
+	#no hand-off written: nothing at all under the copy's /mnt
+	[ ! -e "$BATS_TEST_TMPDIR/mnt" ]
 	grep -q '^sgdisk --pretend ' "$STUB_LOG"
+	#and no cleanup at its exit: no umount, no cryptsetup close
 	run grep -Ev '^(ping |lsblk |findmnt |sgdisk --pretend |cryptsetup --help$|cryptsetup isLuks )' "$STUB_LOG"
 	[ "$status" -eq 1 ]
 	[ -z "$output" ]
@@ -320,10 +426,11 @@ STUB
 @test "a run refuses to start over a mounted /mnt, and the dry run says so" {
 	#problems/dry-run-asks-for-luks-passphrase.md: cleanup no longer releases
 	#what an earlier run left behind, so a new run must refuse to start on it
-	_dry_run_bootstrap STUB_MOUNTS="/mnt /mnt/boot"
+	local m="$BATS_TEST_TMPDIR/mnt"
+	_dry_run_bootstrap STUB_MOUNTS="$m $m/boot"
 	[ "$status" -ne 0 ]
 	[[ "$output" == *"a real run would refuse"* ]]
-	[[ "$output" == *"umount -R /mnt"* ]]
+	[[ "$output" == *"umount -R $m"* ]]
 	run grep -c '^sgdisk ' "$STUB_LOG"
 	[ "$output" = "0" ]
 	run grep -Ev '^(ping |lsblk |findmnt |cryptsetup --help$|cryptsetup isLuks )' "$STUB_LOG"
@@ -366,12 +473,171 @@ STUB
 	[ "${lines[-1]}" = "vm=1" ]
 }
 
+# _bootstrap_handoff TOPOLOGY FAILURE: execute the whole entrypoint, with its
+# real entry guard, EXIT trap, bootstrap_main and writer. Only what the
+# executed installer does is replaced: its main leaves the layout in a fixture
+# mount table and the mappers as fixture files, as a successful real run
+# leaves them. MOUNT_ROOT and /dev/mapper point into the fixture; PATH stubs
+# stand in for findmnt, lsattr, umount, cryptsetup, install and chown, and for
+# FAILURE=partial a cat that writes a prefix and fails. FAILURE=open puts a
+# directory at the destination; none writes normally. An unrelated mount and
+# mapper exist before the run and must outlive it. Cleanup argv go to
+# $box/cleanup.
+_bootstrap_handoff() {
+	local topology="$1" failure="$2"
+	local box="$BATS_TEST_TMPDIR/handoff" m="$BATS_TEST_TMPDIR/mnt" path
+	mkdir -p "$box/bin" "$box/partial" "$box/mapper" || return 1
+	sed -e "s|\"/mnt\"|\"$m\"|g" \
+	    -e "s|\"/mnt/.btrfs-top\"|\"$m/.btrfs-top\"|g" \
+	    -e "s|/dev/mapper/|$box/mapper/|g" \
+	    -e 's|^\tmain "\$@"$|\tsource "$HANDOFF_INSTALLER"|' \
+	    "$REPO/installer" > "$box/installer" || return 1
+	grep -q '^	source "$HANDOFF_INSTALLER"$' "$box/installer" || return 1
+	grep -q "$box/mapper/" "$box/installer" || return 1
+	cp "$REPO/bootstrap" "$box/bootstrap" || return 1
+	cat > "$box/installer-run" <<'FIXTURE'
+# What a successful real installer leaves: the layout mounted, the root mapper
+# open and, on two disks, the VM mapper and its keyfile.
+printf '%s\n' "$@" > "$HANDOFF_BOX/installer-argv"
+printf '%s\n' "$HANDOFF_MNT/" "$HANDOFF_MNT/home" "$HANDOFF_MNT/.snapshots" \
+	"$HANDOFF_MNT/var/log" "$HANDOFF_MNT/var/cache" "$HANDOFF_MNT/var/tmp" \
+	"$HANDOFF_MNT/var/lib/libvirt/images" "$HANDOFF_MNT/boot" >> "$HANDOFF_BOX/mounts"
+mkdir -p "$HANDOFF_MNT/var/lib/libvirt/images"
+: > "$HANDOFF_BOX/mapper/cryptroot"
+if [[ $HANDOFF_TOPOLOGY == dedicated-disk ]]; then
+	: > "$HANDOFF_BOX/mapper/cryptvm"
+	mkdir -p "$HANDOFF_MNT/etc/cryptsetup-keys.d"
+	: > "$HANDOFF_MNT/etc/cryptsetup-keys.d/cryptvm.key"
+fi
+trap - EXIT
+FIXTURE
+	cat > "$box/bin/findmnt" <<'STUB'
+#!/usr/bin/env bash
+# findmnt -n -o FIELD --target TARGET, for the mounted VM storage only
+[[ $# -eq 5 && $1 == -n && $2 == -o && $4 == --target ]] || exit 1
+[[ $5 == "$HANDOFF_MNT/var/lib/libvirt/images" ]] || exit 1
+grep -qxF -- "$5" "$HANDOFF_BOX/mounts" || exit 1
+case "$HANDOFF_TOPOLOGY:$3" in
+	single-disk:SOURCE) echo "$HANDOFF_BOX/mapper/cryptroot[/@vm]" ;;
+	single-disk:FSROOT) echo /@vm ;;
+	dedicated-disk:SOURCE) echo "$HANDOFF_BOX/mapper/cryptvm" ;;
+	dedicated-disk:FSROOT) echo / ;;
+	*:FSTYPE) echo btrfs ;;
+	*) exit 1 ;;
+esac
+STUB
+	cat > "$box/bin/lsattr" <<'STUB'
+#!/usr/bin/env bash
+echo "---------------C------ ${*: -1}"
+STUB
+	cat > "$box/bin/umount" <<'STUB'
+#!/usr/bin/env bash
+# umount -R TARGET takes TARGET and everything below it off the mount table
+echo "umount $*" >> "$HANDOFF_BOX/cleanup"
+[[ $# -eq 2 && $1 == -R ]] || exit 1
+awk -v target="$2" -v below="${2%/}/" '$0 != target && index($0, below) != 1' \
+	"$HANDOFF_BOX/mounts" > "$HANDOFF_BOX/mounts.new" || exit 1
+mv -- "$HANDOFF_BOX/mounts.new" "$HANDOFF_BOX/mounts"
+STUB
+	cat > "$box/bin/cryptsetup" <<'STUB'
+#!/usr/bin/env bash
+echo "cryptsetup $*" >> "$HANDOFF_BOX/cleanup"
+[[ $# -eq 2 && $1 == close && -e $HANDOFF_BOX/mapper/$2 ]] || exit 1
+rm -- "$HANDOFF_BOX/mapper/$2"
+STUB
+	cat > "$box/bin/install" <<'STUB'
+#!/usr/bin/env bash
+[[ $1 == -d ]] || exit 1
+mkdir -p -- "${*: -1}"
+STUB
+	printf '#!/usr/bin/env bash\nexit 0\n' > "$box/bin/chown"
+	cat > "$box/partial/cat" <<'STUB'
+#!/usr/bin/env bash
+# reads the whole heredoc, writes its first 32 bytes, fails as a full disk does
+IFS= read -r -d '' text || :
+printf '%s' "$text" > "$HANDOFF_BOX/consumed"
+printf '%s' "${text:0:32}"
+echo "cat: write error: No space left on device" >&2
+exit 74
+STUB
+	chmod +x "$box/bin/"* "$box/partial/cat" || return 1
+	printf '%s\n' /srv/unrelated > "$box/mounts"
+	: > "$box/mapper/unrelated"
+	: > "$box/cleanup"
+	if [[ $failure == open ]]; then
+		mkdir -p "$m$BOOTSTRAP_STORAGE_CONTRACT" || return 1
+	fi
+	path="$box/bin:$PATH"
+	[[ $failure != partial ]] || path="$box/partial:$path"
+	run env PATH="$path" DRY_RUN=0 HANDOFF_BOX="$box" HANDOFF_MNT="$m" \
+		HANDOFF_TOPOLOGY="$topology" HANDOFF_INSTALLER="$box/installer-run" \
+		bash "$box/bootstrap"
+}
+
+# _handoff_cleanup_expected TOPOLOGY: the release a failed run owes, written
+# out rather than derived from the layout: newest mount first, then the VM
+# mapper on two disks, then the root mapper.
+_handoff_cleanup_expected() {
+	local m="$BATS_TEST_TMPDIR/mnt"
+	printf 'umount -R %s\n' "$m/boot" "$m/var/lib/libvirt/images" "$m/var/tmp" \
+		"$m/var/cache" "$m/var/log" "$m/.snapshots" "$m/home" "$m/"
+	[[ $1 == single-disk ]] || echo "cryptsetup close cryptvm"
+	echo "cryptsetup close cryptroot"
+}
+
+@test "bootstrap refuses a contract write failure and cleans up adopted resources" {
+	local box="$BATS_TEST_TMPDIR/handoff" topology failure
+	for topology in single-disk dedicated-disk; do
+		for failure in open partial; do
+			rm -rf "$box" "${BATS_TEST_TMPDIR:?}/mnt"
+			_bootstrap_handoff "$topology" "$failure"
+			[ "$status" -eq 1 ]
+			[ -f "$box/installer-argv" ]
+			[[ "$output" == *"[OK] VM storage verified: topology=$topology"* ]]
+			[[ "$output" == *"Could not write the bootstrap storage contract"* ]]
+			[[ "$output" != *"stage-2 storage contract written"* ]]
+			[[ "$output" != *"arch-bootstrap complete"* ]]
+			[ "$(< "$box/cleanup")" = "$(_handoff_cleanup_expected "$topology")" ]
+			#only this run's: the unrelated mount and mapper are kept
+			[ "$(< "$box/mounts")" = /srv/unrelated ]
+			[ "$(ls -A "$box/mapper")" = unrelated ]
+			if [[ $failure == partial ]]; then
+				[ "$(stat -c %s "$BATS_TEST_TMPDIR/mnt$BOOTSTRAP_STORAGE_CONTRACT")" = 32 ]
+			fi
+		done
+	done
+}
+
+@test "bootstrap keeps adopted resources after a contract it wrote, both topologies" {
+	local box="$BATS_TEST_TMPDIR/handoff" topology mappers
+	for topology in single-disk dedicated-disk; do
+		rm -rf "$box" "${BATS_TEST_TMPDIR:?}/mnt"
+		_bootstrap_handoff "$topology" none
+		[ "$status" -eq 0 ]
+		[[ "$output" == *"[OK] stage-2 storage contract written: $BOOTSTRAP_STORAGE_CONTRACT"* ]]
+		[[ "$output" == *"[OK] arch-bootstrap complete"* ]]
+		[ -z "$(< "$box/cleanup")" ]
+		[ "$(wc -l < "$box/mounts")" = 9 ]
+		mappers=$'cryptroot\nunrelated'
+		[[ $topology == single-disk ]] || mappers=$'cryptroot\ncryptvm\nunrelated'
+		[ "$(ls -A "$box/mapper")" = "$mappers" ]
+		run contract_as_parsed "$BATS_TEST_TMPDIR/mnt$BOOTSTRAP_STORAGE_CONTRACT"
+		[ "$status" -eq 0 ]
+		[[ "$output" == *"topology='$topology'"* ]]
+		[ "$(stat -c %a "$BATS_TEST_TMPDIR/mnt$BOOTSTRAP_STORAGE_CONTRACT")" = 644 ]
+		if [[ $topology == dedicated-disk ]]; then
+			[ "$(stat -c %a "$BATS_TEST_TMPDIR/mnt$VM_KEYFILE")" = 400 ]
+		fi
+	done
+}
+
 @test "the refusal names the mounts actually left, not a /mnt that is not mounted" {
-	_dry_run_bootstrap STUB_MOUNTS="/mnt/.btrfs-top /mnt/boot"
+	local m="$BATS_TEST_TMPDIR/mnt"
+	_dry_run_bootstrap STUB_MOUNTS="$m/.btrfs-top $m/boot"
 	[ "$status" -ne 0 ]
-	[[ "$output" == *"umount -R /mnt/.btrfs-top"* ]]
-	[[ "$output" == *"umount -R /mnt/boot"* ]]
-	[[ "$output" != *"umount -R /mnt"$'\n'* ]]
+	[[ "$output" == *"umount -R $m/.btrfs-top"* ]]
+	[[ "$output" == *"umount -R $m/boot"* ]]
+	[[ "$output" != *"umount -R $m"$'\n'* ]]
 	run grep -c '^sgdisk ' "$STUB_LOG"
 	[ "$output" = "0" ]
 }
