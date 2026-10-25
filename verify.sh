@@ -2,12 +2,15 @@
 # Mirror hosted CI locally, as a normal user: no step needs root or asks for
 # privilege. Nothing here touches a block device; the real LUKS header check
 # writes only a temporary file in /tmp.
+# Storage integration is opt-in: HYPERLAB_ANSIBLE_REPO selects the sibling
+# checkout and CROSS_REPO_STORAGE_REQUIRED=1 refuses its absence. With neither
+# set, Bats explicitly reports that nothing cross-repository was proved.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 cd "$ROOT"
 
-required=(bash shellcheck bats cryptsetup python3)
+required=(bash shellcheck bats cryptsetup python3 git)
 for tool in "${required[@]}"; do
 	command -v "$tool" >/dev/null \
 		|| { echo "missing verification dependency: $tool" >&2; exit 2; }

@@ -395,3 +395,329 @@ STUB
 	run grep -c '^sgdisk ' "$STUB_LOG"
 	[ "$output" = "0" ]
 }
+
+# Only this test interface selects a sibling; there is no implicit lookup or
+# network fetch. A supplied but unusable checkout is always an error.
+_storage_check() {
+	if [[ ! ${HYPERLAB_ANSIBLE_REPO+x} ]]; then
+		if [[ ${CROSS_REPO_STORAGE_REQUIRED:-0} == 1 ]]; then
+			echo 'cross-repo storage: FAILED - required sibling is absent' >&2
+			return 1
+		fi
+		echo 'cross-repo storage: SKIPPED - nothing cross-repository was proved'
+		return 0
+	fi
+	[[ -n $HYPERLAB_ANSIBLE_REPO ]] \
+		|| { echo 'cross-repo storage: FAILED - explicit sibling is empty' >&2; return 1; }
+	_storage_compare "$SANDBOX" "$HYPERLAB_ANSIBLE_REPO" || return 1
+	local producer_revision consumer_revision
+	producer_revision=$(git -C "$REPO" rev-parse HEAD) || return 1
+	consumer_revision=$(git -C "$HYPERLAB_ANSIBLE_REPO" rev-parse HEAD) || return 1
+	printf 'Compared arch-bootstrap=%s hyperlab-ansible=%s\n' \
+		"$producer_revision" "$consumer_revision"
+}
+
+_storage_compare() {
+	python3 - "$@" <<'PY'
+import json
+import os
+from pathlib import Path
+import stat
+import subprocess
+import sys
+
+import yaml
+
+
+class NoDuplicateKeys(yaml.SafeLoader):
+    pass
+
+
+def mapping(loader: yaml.SafeLoader, node: yaml.nodes.MappingNode,
+            deep: bool = False) -> dict:
+    result = {}
+    for key, value in node.value:
+        key = loader.construct_object(key, deep=deep)
+        if key in result:
+            raise ValueError(f"duplicate YAML key: {key}")
+        result[key] = loader.construct_object(value, deep=deep)
+    return result
+
+
+NoDuplicateKeys.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, mapping)
+
+
+def regular_input(path: Path) -> str:
+    # The explicitly selected checkout root is resolved once by the caller;
+    # files and directories below that root must not redirect the inputs.
+    for item in (path, *path.parents):
+        if item.is_symlink():
+            raise ValueError(f"redirected input: {item}")
+    if not stat.S_ISREG(path.stat().st_mode):
+        raise ValueError(f"not a regular input: {path}")
+    return path.read_text(encoding="utf-8")
+
+
+def compare() -> None:
+    producer = Path(sys.argv[1])
+    sibling = Path(sys.argv[2]).resolve(strict=True)
+    variant = sys.argv[3] if len(sys.argv) > 3 else "clean"
+    manifest = Path(sys.argv[4]) if len(sys.argv) > 4 else sibling / "release/acceptance.v2.yml"
+    guard = sibling / "tools/bootstrap_storage_guard.py"
+    regular_input(guard)
+    acceptance = yaml.load(regular_input(manifest), Loader=NoDuplicateKeys)
+    # These are independent findmnt fixtures, not values derived from installer
+    # constants or the producer output. They are never observations of this host.
+    observations = {
+        "single-disk": ("/dev/mapper/cryptroot[/@vm]", "/@vm"),
+        "dedicated-disk": ("/dev/mapper/cryptvm", "/"),
+    }
+    writer = '''
+source "$1" || exit 1
+install() { command mkdir -p "${*: -1}" || return 1; }
+chown() { :; }
+write_storage_contract "$2" >&2 || exit 1
+printf '%s' "$MOUNT_ROOT$BOOTSTRAP_STORAGE_CONTRACT"
+'''
+    shapes = {}
+    for topology, (source, fsroot) in observations.items():
+        written = subprocess.run(["bash", "-euc", writer, "writer",
+                                  str(producer / "bootstrap"), topology],
+                                 text=True, capture_output=True, check=False)
+        if written.returncode:
+            raise ValueError(f"writer failed ({topology}): {written.stderr}")
+        contract = Path(written.stdout)
+        document = yaml.load(regular_input(contract), Loader=NoDuplicateKeys)
+        if variant == "writable":
+            contract.chmod(0o666)
+        elif variant == "symlink":
+            original = contract.with_suffix(".original")
+            contract.rename(original)
+            contract.symlink_to(original)
+        observed = {"target": "/var/lib/libvirt/images", "source": source,
+                    "fstype": "btrfs", "fsroot": fsroot, "options": "rw,noatime"}
+        if variant == "mapper":
+            observed["source"] = "/dev/mapper/other"
+        elif variant == "fsroot":
+            observed["fsroot"] = "/wrong"
+        env = dict(os.environ, PRIVATESTACK_BOOTSTRAP_STORAGE_TEST="1",
+                   PYTHONDONTWRITEBYTECODE="1")
+        result = subprocess.run([sys.executable, "-B", str(guard), "--mode", "validate",
+                                 "--contract", str(contract), "--hyperlab-root",
+                                 "/var/lib/libvirt/images/hyperlab"],
+                                input=json.dumps({"filesystems": [observed]}),
+                                text=True, capture_output=True, env=env, check=False)
+        if result.returncode:
+            raise ValueError(f"consumer refused ({topology}, exit {result.returncode}): "
+                             f"{result.stderr}")
+        normalized = json.loads(result.stdout)
+        assert normalized["topology"] == topology, normalized
+        assert normalized["mapper"] == source.split("[", 1)[0], normalized
+        assert normalized["fsroot"] == fsroot, normalized
+        assert normalized["mountpoint"] == observed["target"], normalized
+        assert normalized["subvolume"] == document["vm_store"]["subvolume"], normalized
+        shapes[topology] = {key: normalized[key] for key in ("mapper", "fsroot", "subvolume")}
+        print(f"guard accepted {topology}: {json.dumps(normalized, sort_keys=True)}")
+    assert acceptance["allowed_storage_topologies"] == shapes, (
+        "manifest storage disagreement", acceptance["allowed_storage_topologies"], shapes)
+    print("cross-repo storage: OK (both actual writer outputs, guard CLI, complete manifest mapping)")
+
+
+try:
+    compare()
+except (OSError, ValueError, KeyError, TypeError, AssertionError, yaml.YAMLError) as exc:
+    print(f"cross-repo storage: FAILED - {exc}", file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
+_storage_need_sibling() {
+	if [[ ! ${HYPERLAB_ANSIBLE_REPO+x} && ${CROSS_REPO_STORAGE_REQUIRED:-0} != 1 ]]; then
+		skip 'no explicit sibling; nothing cross-repository was proved'
+	fi
+	[[ -n ${HYPERLAB_ANSIBLE_REPO:-} ]] || return 1
+}
+
+_storage_input_case() {
+	local mode="$1" path="${2:-}"
+	unset HYPERLAB_ANSIBLE_REPO CROSS_REPO_STORAGE_REQUIRED
+	case "$mode" in
+		required) export CROSS_REPO_STORAGE_REQUIRED=1 ;;
+		explicit) export HYPERLAB_ANSIBLE_REPO="$path" ;;
+		standalone) ;;
+		*) return 1 ;;
+	esac
+	_storage_check
+}
+
+@test "actual storage writer agrees with the sibling guard and manifest" {
+	run _storage_check
+	printf '# %s\n' "${lines[@]}" >&3
+	[ "$status" -eq 0 ]
+}
+
+@test "storage comparison refuses absent required and explicit missing inputs" {
+	run _storage_input_case standalone
+	[ "$status" -eq 0 ]
+	[[ "$output" == *'SKIPPED - nothing cross-repository was proved'* ]]
+	run _storage_input_case required
+	[ "$status" -ne 0 ]
+	[[ "$output" == *'required sibling is absent'* ]]
+	local path diagnostic
+	while IFS='|' read -r path diagnostic; do
+		run _storage_input_case explicit "${path/@TMP@/$BATS_TEST_TMPDIR}"
+		[ "$status" -ne 0 ]
+		[[ "$output" != *SKIPPED* ]]
+		[[ "$output" == *"$diagnostic"* ]]
+	done <<'CASES'
+|explicit sibling is empty
+@TMP@/missing|No such file or directory
+@TMP@/repo|bootstrap_storage_guard.py
+CASES
+	# Exercise missing manifest and redirected/non-regular guard inputs without
+	# copying or executing a replacement consumer.
+	mkdir -p "$SANDBOX/tools" || return 1
+	: > "$SANDBOX/tools/bootstrap_storage_guard.py"
+	run _storage_input_case explicit "$SANDBOX"
+	[ "$status" -ne 0 ]
+	[[ "$output" == *'acceptance.v2.yml'* ]]
+	rm "$SANDBOX/tools/bootstrap_storage_guard.py" || return 1
+	ln -s "$SANDBOX/bootstrap" "$SANDBOX/tools/bootstrap_storage_guard.py" || return 1
+	run _storage_input_case explicit "$SANDBOX"
+	[ "$status" -ne 0 ]
+	[[ "$output" == *'redirected input'* ]]
+	rm "$SANDBOX/tools/bootstrap_storage_guard.py" || return 1
+	mkdir "$SANDBOX/tools/bootstrap_storage_guard.py" || return 1
+	run _storage_input_case explicit "$SANDBOX"
+	[ "$status" -ne 0 ]
+	[[ "$output" == *'not a regular input'* ]]
+}
+
+# Execute altered source in a fresh Bash process so readonly installer labels
+# cannot also redefine the independent findmnt fixture or the guard's answer.
+_storage_mutate_producer() {
+	python3 - "$@" <<'PY' || return 1
+from pathlib import Path
+import sys
+
+producer = Path(sys.argv[1])
+mutations = {
+    "root-label": ("installer", 'ROOT_LABEL="ARCH_ROOT"', 'ROOT_LABEL="RENAMED_ROOT"'),
+    "vm-label": ("installer", 'VM_LABEL="ARCH_VM"', 'VM_LABEL="RENAMED_VM"'),
+    "root-mapper": ("installer", 'LUKS_NAME="cryptroot"', 'LUKS_NAME="otherroot"'),
+    "vm-mapper": ("installer", 'VM_LUKS_NAME="cryptvm"', 'VM_LUKS_NAME="othervm"'),
+    "mountpoint": ("installer", '@vm|/var/lib/libvirt/images|nocow', '@vm|/other/images|nocow'),
+    "subvolume": ("bootstrap", "expected_subvolume='\"@vm\"'", "expected_subvolume='\"@other\"'"),
+}
+filename, before, after = mutations[sys.argv[2]]
+path = producer / filename
+text = path.read_text()
+assert text.count(before) == 1, (filename, before)
+path.write_text(text.replace(before, after))
+PY
+}
+
+@test "storage producer mutations reach the real consumer and are refused" {
+	_storage_need_sibling
+	local mutation diagnostic box
+	while IFS='|' read -r mutation diagnostic; do
+		box="$BATS_TEST_TMPDIR/$mutation"
+		mkdir -p "$box" || return 1
+		cp "$SANDBOX/installer" "$SANDBOX/bootstrap" "$box/" || return 1
+		_storage_mutate_producer "$box" "$mutation" || return 1
+		run _storage_compare "$box" "$HYPERLAB_ANSIBLE_REPO"
+		printf '# producer mutation %s: expected consumer refusal\n' "$mutation" >&3
+		[ "$status" -ne 0 ]
+		[[ "$output" == *'consumer refused'*"$diagnostic"* ]]
+	done <<'CASES'
+root-label|root_partlabel must be ARCH_ROOT
+vm-label|vm_partlabel differs
+root-mapper|declared mapper differs
+vm-mapper|declared mapper differs
+mountpoint|mountpoint must be /var/lib/libvirt/images
+subvolume|declared subvolume differs
+CASES
+}
+
+@test "required storage comparison propagates a real consumer refusal" {
+	_storage_need_sibling
+	export CROSS_REPO_STORAGE_REQUIRED=1
+	_storage_mutate_producer "$SANDBOX" root-label || return 1
+	run _storage_check
+	[ "$status" -ne 0 ]
+	[[ "$output" == *'consumer refused'*'root_partlabel must be ARCH_ROOT'* ]]
+	[[ "$output" != *SKIPPED* ]]
+}
+
+@test "storage observation drift and unsafe contracts remain consumer refusals" {
+	_storage_need_sibling
+	local variant diagnostic
+	while IFS='|' read -r variant diagnostic; do
+		# Symlink case runs last: no later writer should follow that fixture link.
+		run _storage_compare "$SANDBOX" "$HYPERLAB_ANSIBLE_REPO" "$variant"
+		[ "$status" -ne 0 ]
+		[[ "$output" == *'consumer refused'*"$diagnostic"* ]]
+	done <<'CASES'
+mapper|observed VM-store mapper differs
+fsroot|observed VM-store fsroot differs
+writable|must not be group/world writable
+symlink|must be one regular non-symlink file
+CASES
+}
+
+@test "storage comparison checks the entire manifest mapping and refuses bad inputs" {
+	_storage_need_sibling
+	local manifest="$HYPERLAB_ANSIBLE_REPO/release/acceptance.v2.yml"
+	local variant changed
+	for variant in shape extra-topology extra-field missing-topology duplicate malformed; do
+		changed="$BATS_TEST_TMPDIR/$variant.yml"
+		python3 - "$manifest" "$changed" "$variant" <<'PY' || return 1
+from pathlib import Path
+import sys
+
+import yaml
+
+source, target = map(Path, sys.argv[1:3])
+variant = sys.argv[3]
+manifest = yaml.safe_load(source.read_text())
+shapes = manifest["allowed_storage_topologies"]
+if variant == "shape":
+    shapes["single-disk"]["fsroot"] = "/wrong"
+elif variant == "extra-topology":
+    shapes["other"] = shapes["single-disk"]
+elif variant == "extra-field":
+    shapes["dedicated-disk"]["extra"] = True
+elif variant == "missing-topology":
+    del shapes["dedicated-disk"]
+text = yaml.safe_dump(manifest)
+if variant == "duplicate":
+    text += "\nallowed_storage_topologies: {}\n"
+elif variant == "malformed":
+    text = "allowed_storage_topologies: [\n"
+target.write_text(text)
+PY
+		run _storage_compare "$SANDBOX" "$HYPERLAB_ANSIBLE_REPO" clean "$changed"
+		[ "$status" -ne 0 ]
+		case "$variant" in
+			duplicate) [[ "$output" == *'duplicate YAML key'* ]] ;;
+			malformed) [[ "$output" == *'while parsing a flow node'* ]] ;;
+			*) [[ "$output" == *'manifest storage disagreement'* ]] ;;
+		esac
+	done
+	local diagnostic
+	while IFS='|' read -r variant diagnostic; do
+		changed="$BATS_TEST_TMPDIR/$variant.yml"
+		case "$variant" in
+			redirected) ln -s "$manifest" "$changed" || return 1 ;;
+			directory) mkdir "$changed" || return 1 ;;
+		esac
+		run _storage_compare "$SANDBOX" "$HYPERLAB_ANSIBLE_REPO" clean "$changed"
+		[ "$status" -ne 0 ]
+		[[ "$output" != *SKIPPED* ]]
+		[[ "$output" == *"$diagnostic"* ]]
+	done <<'CASES'
+missing|No such file or directory
+redirected|redirected input
+directory|not a regular input
+CASES
+}
