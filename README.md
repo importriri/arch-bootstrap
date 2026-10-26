@@ -262,3 +262,6 @@ records architecture and sanitized hardware evidence.
 ## License
 
 MIT
+
+The origin of every tracked file and the licences of everything the
+installer fetches: [`docs/third-party-licences.md`](docs/third-party-licences.md).

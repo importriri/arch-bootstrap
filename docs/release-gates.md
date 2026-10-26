@@ -135,6 +135,29 @@ Repeat the Nitro sequence and additionally prove:
 - the Nitro-derived `pcie_port_pm=off` fix remains effective on the RTX 3070
   profile.
 
+## Licences and redistribution
+
+[`third-party-licences.md`](third-party-licences.md) records the origin of
+every tracked file and the licence of every package the installer fetches.
+Installing from the Arch mirrors redistributes nothing; an image that carries
+those packages does. These prerequisites are unresolved, and nothing they
+cover is approved for bundling:
+
+- U1: the exact package closure an image installs is not inventoried;
+- U2: the `linux-firmware` split packages carry per-vendor licence files that
+  are not reviewed, and ten `WHENCE` entries have no visible source;
+- U3: `intel-ucode`: whether its early-load image is redistribution "without
+  modification";
+- U4: `amd-ucode`: its third-party technology clause and export
+  certification;
+- U5: how an image offers the corresponding source of its GPL and LGPL
+  packages;
+- U6: the `base` record names `GPL` without a version;
+- U7: licences of what is compiled into `sbctl` and `zram-generator` and of
+  the collections bundled in `ansible`;
+- U8: whether the Arch `vim` build counts as unmodified under the Vim licence;
+- U9: the live-medium tools an installer image would carry.
+
 ## Evidence and publication rule
 
 A component fix, hosted green CI or one successful laptop does not authorize
