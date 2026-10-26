@@ -229,6 +229,11 @@ It uses two sparse loop devices and proves:
 not a substitute for the complete two-disk gate.
 
 Release procedure: [`docs/release-gates.md`](docs/release-gates.md).
+A bootable installer image is proposed, not built:
+[`docs/adr/0001-iso-build-and-distribution.md`](docs/adr/0001-iso-build-and-distribution.md)
+says how it would be built, verified and signed. No profile, image or
+signature exists; implementation is pending, and the path above stays the
+way to install.
 Interesting tooling failures are indexed under
 [`problems/README.md`](problems/README.md).
 

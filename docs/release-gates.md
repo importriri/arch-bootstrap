@@ -158,6 +158,36 @@ cover is approved for bundling:
 - U8: whether the Arch `vim` build counts as unmodified under the Vim licence;
 - U9: the live-medium tools an installer image would carry.
 
+## Proposed: installer image qualification
+
+[`adr/0001-iso-build-and-distribution.md`](adr/0001-iso-build-and-distribution.md)
+proposes an installer image built from an archiso profile in this
+repository. It is not accepted and nothing of it is built: no profile,
+image, signature or key exists, and gates 1 to 4 above keep their meaning
+and their pending status. Gate 3 still boots the reviewed upstream Archiso
+until an image passes the steps below.
+
+An image would qualify in this order, each step only after the previous one:
+
+1. static validation of the profile, its admission list and its pinned
+   inputs, in `bash verify.sh`;
+2. a real build in an isolated builder, never on the operator's host;
+3. two clean builds compared by the SHA-256 of the image and of the package
+   manifest; a mismatch fails and is explained, and the build stays
+   development-only;
+4. a UEFI VM boot (OVMF, no host disk) reaching the live prompt, with no
+   unexpected disk write, and refusal tests for a bad signature, a bad hash
+   and a missing input;
+5. a physical boot on Nitro, then on Predator with the same image, without
+   installing; it does not replace gates 3 and 4.
+
+A distributed image also needs every embedded component admitted under the
+ADR's payload rule (today only this repository's own files meet its
+evidence conditions, and nothing is admitted yet), and
+a detached signature over `SHA256SUMS` by a key whose fingerprint the user
+obtains through an independent channel. An unsigned build is a development
+build, whatever it contains. Steps 1 to 5 are pending.
+
 ## Evidence and publication rule
 
 A component fix, hosted green CI or one successful laptop does not authorize
