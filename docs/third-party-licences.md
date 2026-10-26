@@ -255,10 +255,16 @@ image distributed to the public carries this file.
 
 ## 4. Build-time and verification tools (not shipped)
 
-These tools build or check the repository. None of them is installed on a
-target or carried by the repository, so their licences have no bearing on
-what the repository or a target redistributes, and they are not audited
-here.
+These tools build or check the repository. The copies listed here run on
+the hosted runner, on the developer's machine or in a throwaway VM; the
+repository does not carry them and nothing ships them, so their licences are
+not audited here. Some of the same programs also exist on a target, as
+separate copies from Arch packages: `git` and `cryptsetup` are in
+`PACSTRAP_PACKAGES` (and `cryptsetup` may be upgraded on the live medium),
+`btrfs` and `mkfs.btrfs` come from `btrfs-progs`, and tools such as `findmnt`,
+`lsblk` and `losetup` come with the closure of `base`. Those target copies are
+covered by [section 2](#2-packages-the-installer-fetches) and
+[section 5](#5-transitive-dependencies-not-inventoried), not by this table.
 
 | Tool | Where | Use |
 | --- | --- | --- |
@@ -289,18 +295,44 @@ inventoried here. Examples, from the records: `base` depends on
 `util-linux` and `xz`; `ansible` on `ansible-core` and `python`; `vim` on
 `vim-runtime`; `linux-hardened` on `initramfs`, which pulls in an initramfs
 generator. This is not a bill of materials. An ISO build must inventory the
-closure it actually installs, with versions and the licence files under
-`/usr/share/licenses/`.
+closure it actually installs, with versions, and establish for each package
+where its applicable licence and notice texts are (see
+[section 6](#6-third-party-notices)).
 
 ## 6. Third-party notices
 
 - Repository: no third-party material was found, so no third-party notice is
   required; `LICENSE` stays with every copy.
-- Installed systems: every package installs its own licence files under
-  `/usr/share/licenses/<package>/`. Nothing in `installer` or `bootstrap`
-  refers to that directory, so they are installed as packaged.
+- Installed systems: packages keep their licence texts in different
+  places, and some ship none of their own. Nothing in `installer` or
+  `bootstrap` refers to `/usr/share/licenses/` or `/usr/share/doc/`, so
+  whatever a package ships is installed as packaged.
 - A future ISO: the notices of every component it carries must travel with
   the image; this report does not reproduce them.
+
+Where the packages the installer fetches keep their licence texts, from the
+official file lists (`https://archlinux.org/packages/<repo>/<arch>/<name>/files/`,
+retrieved 2026-10-26, for the versions in section 2):
+
+| Location | Packages |
+| --- | --- |
+| own file under `/usr/share/licenses/<package>/` | `intel-ucode` (`LICENSE`), `amd-ucode` (`LICENSE.amd-ucode`), `sbctl` (`LICENSE`), `zram-generator` (`LICENSE`), `vim` (`license.txt`), `sudo` (`LICENSE.md`, also as `/usr/share/doc/sudo/LICENSE.md`), the `linux-firmware` split packages and `linux-firmware-whence` (section 3) |
+| documentation directory only | `dosfstools`: `/usr/share/doc/dosfstools/COPYING` |
+| inside the Python tree | `ansible`: `usr/lib/python3.14/site-packages/ansible-14.5.0.dist-info/licenses/COPYING`, plus 305 `COPYING`, `LICENSE`, `NOTICE` and similar files in 91 collection directories under `ansible_collections/` |
+| no licence file of its own | `linux-hardened`, `btrfs-progs`, `cryptsetup`, `iwd`, `git`, `archlinux-keyring`; `git` ships one `COPYING` for a bundled component, `usr/share/git/subtree/COPYING` |
+| no files at all | `base` |
+
+For the packages without a licence file of their own, the only text on an
+installed system is the generic one of the shared
+[`licenses`](https://archlinux.org/packages/core/any/licenses/) package
+(core 20240728-1, a dependency of `base`), under
+`/usr/share/licenses/spdx/<identifier>.txt` (for example `GPL-2.0-only.txt`,
+`GPL-2.0-or-later.txt`, `GPL-3.0-or-later.txt`, `LGPL-2.1-or-later.txt`).
+Those generic texts carry no copyright line of any package, and the
+`licenses` package has no text for `MIT` or for the `custom` licences; the
+packages of section 2 under those licences ship their own. Where the copyright notices of the
+packages without a file of their own are kept, in the binaries or only in
+their sources, is not established here (U1).
 
 ## 7. Unresolved redistribution prerequisites
 
@@ -309,7 +341,7 @@ evidence it names exists.
 
 | Id | Component | Missing evidence | Blocks |
 | --- | --- | --- | --- |
-| U1 | transitive closure of every installed package (`base` and all others) | an inventory of the exact closure an ISO build installs, with versions and licences | any ISO payload |
+| U1 | transitive closure of every installed package (`base` and all others) | an inventory of the exact closure an ISO build installs, with versions and licences, and for each package the location of every applicable licence and notice text (package directory, `/usr/share/doc/`, the shared `spdx/` texts, language trees, or the source only) | any ISO payload |
 | U2 | `linux-firmware` split packages | review of each shipped licence file (`WHENCE` plus 172 files across 12 split packages, many of them duplicated between packages); a decision on the 10 `WHENCE` entries without visible source | firmware in an ISO |
 | U3 | `intel-ucode` | whether the `iucode_tool` early-load image is redistribution "without modification" | Intel microcode in an ISO |
 | U4 | `amd-ucode` | review of the third-party technology clause and the export certification | AMD microcode in an ISO |
