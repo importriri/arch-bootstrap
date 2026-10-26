@@ -99,8 +99,8 @@ None of these exists. The implementation unit creates them.
 iso/README.md                 build, compare and verify instructions
 iso/build-inputs.yml          pinned inputs: archiso version, archive date,
                               stage-2 repository and commit, build mode
-iso/admission.yml             one entry per live-payload package: decision
-                              and the audit entry it rests on
+iso/admission.yml             one entry per package of the resolved closure:
+                              name, exact version, decision, audit entry
 iso/build                     refuses unpinned or dirty input, runs mkarchiso,
                               writes the build records
 iso/compare                   compares two build records and their images
@@ -165,8 +165,10 @@ payload and follow the admission rule.
 
 ### Live payload
 
-`iso/profile/packages.x86_64` lists exactly what the live medium needs to
-run `bootstrap` and to recover a host:
+`iso/profile/packages.x86_64` lists the direct requests, exactly what the
+live medium needs to run `bootstrap` and to recover a host; pacman resolves
+their dependencies, and the resolved closure is what the image carries and
+what [admission](#payload-admission) judges:
 
 ```text
 base linux mkinitcpio mkinitcpio-archiso
@@ -192,7 +194,7 @@ redistributed set small.
 
 | Item | Where it comes from | Authenticated by |
 | --- | --- | --- |
-| live packages | embedded at build time from the Arch Linux Archive snapshot | package signatures, required (`SigLevel = Required`), checked against the `archlinux-keyring` of the same snapshot; digests in the package manifest |
+| live packages | embedded at build time from the Arch Linux Archive snapshot | package signatures, required for every package (`SigLevel = Required DatabaseOptional`, see [reproducibility](#reproducibility)), checked against the `archlinux-keyring` of the same snapshot; digests in the package manifest |
 | this repository at commit `C` | embedded: `git archive C` under `/root/arch-bootstrap/` | the release signature over `SHA256SUMS`, which covers the image; `C` is in the build record |
 | stage-2 pin | embedded: `/usr/local/share/hyperlab-installer/release.json` with `C`, the stage-2 repository URL and its 40-character commit `S`, the archive date, `SOURCE_DATE_EPOCH` and the build mode | the same release signature |
 | `archlinux-keyring` refresh on the live medium | fetched by `pacstrap_base` from the mirrors | its package signature, against the image's keyring |
@@ -296,9 +298,20 @@ The 22 PNG files of `hyperlab-ansible` under
 until their provenance is resolved. They are not on the live payload, and
 the image never embeds a stage-2 tree that would carry them.
 
+**Admission covers the closure, not the requests.** `iso/admission.yml` has
+one entry per package of the resolved closure, dependencies included, with
+its name, its exact version (`pkgver-pkgrel`), the decision and the audit
+entry it rests on. The direct requests of `packages.x86_64` are a subset of
+it. A `release-candidate` build compares every row of its package manifest
+with these entries and refuses when a package has no entry, when its version
+differs from the admitted one, or when its entry is not admitted. Two
+identical builds do not lift that refusal: a new transitive dependency, or
+an updated one, needs its own entry. A development build records the
+packages that are not admitted in its build record and goes on.
+
 Consequence: today no image can be distributed. Every build is a development
-build until U1, U5, U6 and U9 are settled for the live payload and each entry
-of `iso/admission.yml` is accepted.
+build until U1, U5, U6 and U9 are settled for the live payload and every
+entry of `iso/admission.yml` is accepted.
 
 ## Reproducibility
 
@@ -310,10 +323,21 @@ record:
   `723da192226e1c9d5def9168f13332793c82a85e`); a different version refuses;
 - packages: one Arch Linux Archive date. The build `pacman.conf` points every
   repository at `https://archive.archlinux.org/repos/YYYY/MM/DD/$repo/os/$arch`
-  for that date and nothing else. For the snapshot checked (2026/10/25, on
-  2026-10-26) the archive serves `core.db` without a `.sig`, so the database
-  is not signed: authenticity rests on the required package signatures and
-  on the package digests the manifest records;
+  for that date and nothing else;
+- signatures: `SigLevel = Required DatabaseOptional` in `[options]`, the
+  value of `releng`, and no repository section that overrides it. In
+  pacman.conf(5), `Required` alone requires signatures "on all packages and
+  databases"; for the snapshot checked (2026/10/25, on 2026-10-26) the
+  archive serves `core.db` without a `.sig`, so `Required` alone would stop
+  the build at the database download. `DatabaseOptional` accepts an unsigned
+  database and still refuses an invalid database signature; every package
+  keeps a mandatory signature, from a key in the snapshot keyring. What an
+  unsigned database leaves open, beyond the TLS of the archive host, is a
+  database swapped in transit, for instance one that serves older signed
+  packages. It cannot add an unsigned package; a release candidate refuses
+  any version other than the admitted one, and the manifest records what
+  was installed, so the swap is visible rather than silent. Any other `SigLevel` token (`Never`, `Optional`,
+  `PackageOptional`, `PackageNever`, `TrustAll`, `PackageTrustAll`) refuses;
 - keyring: the builder's `archlinux-keyring` is the one of the same
   snapshot, recorded by version and digest;
 - source: this repository at a clean commit `C`; a dirty tree or an
@@ -382,11 +406,13 @@ published the files.
 **Build modes.** `iso/build` defaults to `development`: names end in
 `-dev-unsigned`, the boot entry and `motd` say "development build, unsigned,
 not a release", and `build.json` says `"mode": "development"`. A
-`release-candidate` build refuses unless every `iso/admission.yml` entry is
-admitted and (`C`, `S`) is a frozen campaign pair. `iso/build` never signs.
+`release-candidate` build refuses unless every installed package matches an
+admitted entry of `iso/admission.yml` at its exact version and (`C`, `S`) is
+a frozen campaign pair. `iso/build` never signs.
 
 **Signing.** `iso/sign-release` is the only path to `SHA256SUMS.sig`. It
-refuses, writing nothing, when the build is a development build; when the
+refuses, writing nothing, when the build is a development build; when its
+package manifest no longer matches the admitted entries at `C`; when the
 two-build comparison is missing or not equal; when no release-key
 fingerprint is recorded in the repository; when the key in the signer's
 keyring does not have that fingerprint; or when the key is absent. A missing
@@ -402,13 +428,16 @@ a new key (signed by the old one while it is valid) are the operator's.
    account that publishes the image: this repository's README at the
    release tag, and one more channel the operator names. A short key id is
    not accepted, and two channels that disagree stop the verification.
-2. Download the image, `SHA256SUMS`, `SHA256SUMS.sig` and the public key.
+2. Download `SHA256SUMS`, `SHA256SUMS.sig` and the public key.
 3. In an empty temporary `GNUPGHOME`, import the key and check
    `gpg --status-fd 1 --verify SHA256SUMS.sig SHA256SUMS`: the primary-key
    fingerprint on the `VALIDSIG` line must equal the published one. A missing
    `.sig`, a bad signature or another key stops here.
-4. `sha256sum --check SHA256SUMS`, without `--ignore-missing`, so that a
-   missing or altered file fails.
+4. Download every file that the verified `SHA256SUMS` lists, into the same
+   directory: the image, the package manifest, the build record, the notices
+   and the corresponding source.
+5. `sha256sum --check SHA256SUMS`, without `--ignore-missing`, so that any
+   listed file that is missing or altered fails.
 
 `iso/verify-download` performs the same steps and refuses on the first
 failure; the manual commands remain the reference. No media-write command is
@@ -475,7 +504,7 @@ non-commercial remix permission of section 2. The proposal:
 | A package changed between builds | the manifests differ, the comparison fails, the build is not eligible for signing |
 | An asset of unknown provenance | not admitted; a release-candidate build refuses while any entry is not admitted; a development build may carry it and stays development-only |
 | Two clean builds with different digests | the comparison fails, the difference is explained under `problems/`, the build stays development-only |
-| A checksum file without a signature | the user verification stops at step 3; `iso/verify-download` refuses; a hash is integrity, not authentication |
+| A checksum file without a signature | the user verification stops at step 3, before anything else is downloaded; `iso/verify-download` refuses; a hash is integrity, not authentication |
 
 ## Next implementation unit
 
@@ -489,21 +518,33 @@ sign, publish, write a medium or boot hardware. Acceptance:
    `iso_name`, `iso_label`, `iso_publisher`, `iso_application`,
    `install_dir`, the boot entry title and `motd` contain neither "Arch
    Linux" nor a word starting with "arch" (case-insensitive), except the
-   paths and hook names archiso itself defines; `packages.x86_64` equals the package set of `iso/admission.yml`
-   and contains none of `openssh`, `cloud-init`, `reflector`, `syslinux`,
-   firmware or microcode packages; no `syslinux/`, `splash.png`,
+   paths and hook names archiso itself defines; every direct request of
+   `packages.x86_64` has an entry in `iso/admission.yml`, each entry names
+   one package and one exact version, no name appears twice, and neither
+   file contains `openssh`, `cloud-init`, `reflector`, `syslinux`, firmware
+   or microcode packages; no `syslinux/`, `splash.png`,
    `.automated_script.sh` or sshd overlay exists; every `pacman.conf`
-   repository uses only the archive date of `iso/build-inputs.yml` and
-   `SigLevel = Required`; `ORIGIN.tsv` lists every profile file exactly once
-   and nothing else; `iso/profile/LICENSE` is the GPL-3.0 text;
+   repository uses only the archive date of `iso/build-inputs.yml`;
+   `[options]` has `SigLevel = Required DatabaseOptional` and no repository
+   section sets another `SigLevel`; `ORIGIN.tsv` lists every profile file
+   exactly once and nothing else; `iso/profile/LICENSE` is the GPL-3.0 text;
    `build-inputs.yml` has a 40-character `S`. Each check has a mutation that
    turns it red.
 2. **Real build** with `iso/build` in an isolated builder: a disposable Arch
    VM or the nested lab host, never the operator's host and never with the
    operator's privilege, with the archiso and keyring of the snapshot. It
    refuses a dirty tree, an unpinned or malformed input, an archiso version
-   other than the pin, a package signature failure and a live `cryptsetup`
-   without `argon2id`, and it writes the development artefacts named above.
+   other than the pin, a missing or invalid package signature and a live
+   `cryptsetup` without `argon2id`, accepts the unsigned archive database,
+   and writes the development artefacts named above. A local fixture
+   repository shows the signature policy: an unsigned database with signed
+   packages installs; an unsigned package, or one signed by a key outside
+   the keyring, refuses. Its admission check,
+   run on fixture manifests, lets a release-candidate pass only when every
+   row matches an admitted entry at its exact version, and refuses a
+   fixture that adds one unadmitted transitive dependency (or changes one
+   version) while the direct requests stay the same, even when two builds
+   give identical manifests.
 3. **Two-build comparison** with `iso/compare` on two fresh builders: both
    digests are recorded; a mismatch is written up under `problems/` with its
    cause, and the build stays development-only. Equality is not required to
@@ -514,16 +555,19 @@ sign, publish, write a medium or boot hardware. Acceptance:
    console; `release.json` parses and names `C` and `S`; every command
    `installer` and `bootstrap` call resolves with `command -v`; the embedded
    `bootstrap` started with closed input refuses in dry-run mode before any
-   disk is selected. The scratch disk's SHA-256 before and after the run is identical:
-   no unexpected disk write.
+   disk is selected. The scratch disk's SHA-256 before and after the run is
+   identical: no unexpected disk write.
 5. **Refusal tests** in `tests/iso-release.bats`, with a throwaway key made in
-   a temporary `GNUPGHOME`: `iso/verify-download` accepts a good signature by
-   the expected fingerprint and a matching hash, and refuses a bad
-   signature, a good signature by another key, a missing `.sig`, a missing
-   `SHA256SUMS`, a missing image, a changed image and a `SHA256SUMS` that
-   lists a file twice; `iso/sign-release` refuses a development build, a
-   missing or unequal comparison, a missing fingerprint record and a missing
-   key, and writes nothing in each case.
+   a temporary `GNUPGHOME`, on a complete release fixture holding every
+   artefact named above: `iso/verify-download`, given exactly the files of
+   the documented download set, accepts a good signature by the expected
+   fingerprint with every listed file present and matching, and refuses a
+   bad signature, a good signature by another key, a missing `.sig`, a
+   missing `SHA256SUMS`, any one listed artefact missing or altered (each
+   in turn) and a `SHA256SUMS` that lists a file twice; `iso/sign-release` refuses a development build, a
+   missing or unequal comparison, a manifest that no longer matches the
+   admitted entries, a missing fingerprint record and a missing key, and
+   writes nothing in each case.
 6. Both verifier modes pass; the README and
    [`../release-gates.md`](../release-gates.md) describe the result as
    software-verified only.

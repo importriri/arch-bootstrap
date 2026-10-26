@@ -181,11 +181,12 @@ An image would qualify in this order, each step only after the previous one:
 5. a physical boot on Nitro, then on Predator with the same image, without
    installing; it does not replace gates 3 and 4.
 
-A distributed image also needs every embedded component admitted under the
-ADR's payload rule (today only this repository's own files meet its
-evidence conditions, and nothing is admitted yet), and
-a detached signature over `SHA256SUMS` by a key whose fingerprint the user
-obtains through an independent channel. An unsigned build is a development
+A distributed image also needs everything it embeds admitted under the
+ADR's payload rule, every package of the resolved closure at its exact
+version, dependencies included (today only this repository's own files meet
+the rule's evidence conditions, and nothing is admitted yet), and a detached
+signature over `SHA256SUMS` by a key whose fingerprint the user obtains
+through an independent channel. An unsigned build is a development
 build, whatever it contains. Steps 1 to 5 are pending.
 
 ## Evidence and publication rule
