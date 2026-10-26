@@ -40,7 +40,8 @@ Its columns:
 The digests are of the bytes in the commit that adds the inventory. There,
 `README.md` and `docs/release-gates.md` carry the link to this report; the
 other 50 files are byte-identical to the input commit. The two audit files
-are not rows of the inventory, since a file cannot hold its own digest:
+are listed here instead of in the inventory, which cannot hold its own
+digest:
 
 - `docs/third-party-licences.md` (this report);
 - `docs/file-inventory.tsv` (the inventory).
@@ -50,7 +51,7 @@ are not rows of the inventory, since a file cannot hold its own digest:
 Git history gives the commit that introduced a file, its date and the
 identity recorded on that commit. It is not proof of authorship: a commit
 records who added bytes, not who wrote them or where they came from. Every
-commit up to the input commit is recorded under the maintainer's identity
+commit up to the input commit is authored under the maintainer's identity
 (the person named in `LICENSE` and [`AUTHORS.md`](../AUTHORS.md)); the earliest
 files arrived together in `2d5fe57`, so anything that existed before that
 commit has no history here.
@@ -58,8 +59,8 @@ commit has no history here.
 The `written here` origin therefore rests on three things, and only these:
 the introducing commit carries the maintainer's identity; the content has no
 third-party copyright line, licence notice, attribution or note of a
-third-party source (the tree was searched for them); and `LICENSE` and `AUTHORS.md` declare the
-maintainer as author. The declaration is the maintainer's statement, not an
+third-party source (the tree was searched for them); and `LICENSE` and
+`AUTHORS.md` declare the maintainer as author. The declaration is the maintainer's statement, not an
 independent proof, and confirming it remains with the maintainer.
 
 ### Result
@@ -129,8 +130,8 @@ against a concrete ISO is an interpretation for the operator to confirm.
 | [`iwd`](https://archlinux.org/packages/extra/x86_64/iwd/) | extra 3.12-2 | `LGPL-2.1-or-later` | <https://git.kernel.org/cgit/network/wireless/iwd.git/> | target: Wi-Fi for the stage-2 fetch | licence text; corresponding source | documented conditions, source delivery undecided (U5) |
 | [`git`](https://archlinux.org/packages/extra/x86_64/git/) | extra 2.56.0-1 | `GPL-2.0-only` | <https://git-scm.com/> | target: cloning `hyperlab-ansible` at first boot | licence text; corresponding source | documented conditions, source delivery undecided (U5) |
 | [`ansible`](https://archlinux.org/packages/extra/any/ansible/) | extra 14.5.0-1 | `GPL-3.0-or-later` | <https://pypi.org/project/ansible/> | target: running stage 2 | licence text; corresponding source; the record names one licence for a package that bundles many collections, whose own licences are not inventoried | blocked pending evidence (U7) |
-| [`sudo`](https://archlinux.org/packages/core/x86_64/sudo/) | core 1.9.17.p2-6 | `custom` | <https://www.sudo.ws/sudo/> | target: privilege for the stage-2 playbooks (`-K`) | upstream `LICENSE.md` at `v1.9.17p2` (sha256 `41eb34d6…f62d7`): an ISC-style licence for sudo plus per-file ISC and BSD notices; copyright and permission notices must appear in copies; one BSD notice forbids endorsement by name | documented conditions |
-| [`vim`](https://archlinux.org/packages/extra/x86_64/vim/) | extra 9.2.1178-1 | `custom:vim` | <https://www.vim.org> | target: editor on the TTY host | upstream `LICENSE` at `v9.2.1178` (sha256 `0b3f1f33…7d720`): unmodified copies and executables built from unmodified sources must include the licence text; modified versions have four further conditions (section II); the PKGBUILD at `9.2.1178-1` applies no patch, whether its build counts as unmodified is for review | documented conditions (U8) |
+| [`sudo`](https://archlinux.org/packages/core/x86_64/sudo/) | core 1.9.17.p2-6 | `custom` | <https://www.sudo.ws/sudo/> | target: privilege for the stage-2 playbooks (`-K`) | upstream `LICENSE.md` at `v1.9.17p2` (sha256 `41eb34d6b184c2638d6d32c6e7f70b8dd6423e68b91da959e0cf773aa01f62d7`): an ISC-style licence for sudo plus per-file ISC and BSD notices; the copyright and permission notices must appear in copies; three BSD notices forbid using their authors' names to endorse derived products | documented conditions |
+| [`vim`](https://archlinux.org/packages/extra/x86_64/vim/) | extra 9.2.1178-1 | `custom:vim` | <https://www.vim.org> | target: editor on the TTY host | upstream `LICENSE` at `v9.2.1178` (sha256 `0b3f1f330cb1b179bb17c7c687d4cec601e0aa3462bc7f890ad4c3888d37d720`): unmodified copies and executables built from unmodified sources must include the licence text (section I); a modified version must meet four further conditions (section II); the PKGBUILD at `9.2.1178-1` applies no patch file but edits `src/feature.h` with `sed` to set the system vimrc path | blocked pending evidence (U8) |
 | [`archlinux-keyring`](https://archlinux.org/packages/core/any/archlinux-keyring/) | core 20260909-1 | `GPL-3.0-or-later` | <https://gitlab.archlinux.org/archlinux/archlinux-keyring/> | live medium: refreshed before `pacstrap`; target: pulled in again by `base` | licence text; corresponding source | documented conditions, source delivery undecided (U5) |
 
 `cryptsetup` appears twice in the installer: in `PACSTRAP_PACKAGES` and in the
@@ -161,8 +162,9 @@ depends on `linux-firmware-whence`, which ships the upstream `WHENCE` file as
 `9350832c1e9afc35df50fa8b9793b31d60d78ef963152eec903fc0dbc6b4a559`; the
 record of `linux-firmware-whence` 20260916-1 gives the same installed size)
 documents each firmware's origin and licence. It has 262 `Driver:` entries
-with 279 lines that open with `Licence:` or `License:`, in 143 distinct wordings. Most read
-"Redistributable. See LICENCE.<vendor> for details"; others name
+and 279 lines that open with `Licence:` or `License:`, in 143 distinct
+wordings. Most read "Redistributable. See LICENCE.<vendor> for details";
+others name
 `GPLv2`, `GPLv2 or later`, `GPLv3`, `MIT`, `Apache-2.0` or "Dual GPLv2/MPL".
 Ten say that no source is visible:
 
@@ -268,9 +270,9 @@ here.
 | `bash`, `python3`, `git` | `verify.sh` | entrypoint requirements |
 | `losetup`, `sgdisk`, `cryptsetup`, `mkfs.fat`, `mkfs.btrfs`, `btrfs`, `findmnt`, `lsattr`, `stat`, `lsblk`, `readlink`, `udevadm` | `tests/vm-pipeline-test`, in a throwaway VM | the disposable two-loop storage gate |
 
-The commands `installer` runs on the live medium before `pacstrap`
-(`sgdisk`, `lsblk`, `mkfs.fat`, `mkfs.btrfs`, `pacstrap`, `genfstab`,
-`arch-chroot` and others) come from the Archiso the operator boots. The
+The commands `installer` runs from the live medium (`sgdisk`, `lsblk`,
+`mkfs.fat`, `mkfs.btrfs`, `pacstrap`, `genfstab`, `arch-chroot` and others)
+come from the Archiso the operator boots. The
 installer does not fetch them and the repository does not ship them; a future
 ISO that becomes that live medium must inventory them as part of its own
 payload (U9).
@@ -295,8 +297,8 @@ closure it actually installs, with versions and the licence files under
 - Repository: no third-party material was found, so no third-party notice is
   required; `LICENSE` stays with every copy.
 - Installed systems: every package installs its own licence files under
-  `/usr/share/licenses/<package>/`. The installer neither removes nor edits
-  them; it does not touch that directory.
+  `/usr/share/licenses/<package>/`. Nothing in `installer` or `bootstrap`
+  refers to that directory, so they are installed as packaged.
 - A future ISO: the notices of every component it carries must travel with
   the image; this report does not reproduce them.
 
@@ -314,7 +316,7 @@ evidence it names exists.
 | U5 | GPL and LGPL packages (`linux-hardened`, `btrfs-progs`, `cryptsetup`, `dosfstools`, `iwd`, `git`, `ansible`, `archlinux-keyring`, and the closure) | how an ISO offers the complete corresponding source of the exact builds it carries | any ISO carrying them |
 | U6 | `base` record licence | `GPL` without a version; the package installs no files, so this weighs only on the record | nothing by itself; recorded for completeness |
 | U7 | `sbctl`, `zram-generator`, `ansible` | licences of the Go modules and Rust crates compiled into the first two, and of the collections bundled in `ansible` | these three in an ISO |
-| U8 | `vim` | whether the Arch build counts as built from unmodified sources (section I) or as a modified version (section II) of the Vim licence | `vim` in an ISO, under section I alone |
+| U8 | `vim` | whether the Arch build, whose PKGBUILD edits `src/feature.h`, is built from unmodified sources (section I) or is a modified version (section II) of the Vim licence | `vim` in an ISO |
 | U9 | live-medium tools (Archiso payload) | an inventory of the live environment a future ISO would become | an installer ISO |
 
 The repository files themselves add no open item: their origin rests on the
