@@ -260,7 +260,12 @@ The saved copy was restored and all ten cases were green again.
 Normal `bats tests/*.bats` discovery now finds 80 tests. Both complete verifiers
 passed. Standalone mode passed 76 tests and explicitly skipped the four
 sibling-dependent ones. Required mode passed all 80 with no skips, the actual
-guard accepted both topologies, and the manifest mapping matched. Sibling
+guard accepted both topologies, and the manifest mapping matched. That run
+printed
+`Compared arch-bootstrap=2e2470f1711d5b7cc78d3acecddf5303fee43ae5 hyperlab-ansible=9def5390653b95967fe7143c6195bf1ed0004609`.
+The producer worktree had no uncommitted changes at that point. That writer
+revision is the commit that added these tests. The only later change is this
+sentence. Sibling
 metadata was unchanged and no bytecode was written. This is software-verified
 fixture coverage. It is not a hosted CI run or a storage observation on any
 machine.
