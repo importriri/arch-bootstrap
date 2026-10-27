@@ -695,10 +695,12 @@ _bootstrap_keeps() {
 
 # Execute only the parsed verifier body, with local checkout directories and a
 # recording verifier. PARENT selects absent, matching or conflicting inputs in
-# the caller; the workflow must supply its own values in every case.
+# the caller; the workflow must supply its own values in every case. RECORDING
+# is always (every invocation records) or success-only, a fault in which the
+# failing verifier leaves no observation of its own.
 _storage_workflow_case() {
-	local workflow="$1" parent="$2"
-	python3 - "$workflow" "$BATS_TEST_TMPDIR/workflow-$parent" "$parent" <<'PY' || return 1
+	local workflow="$1" parent="$2" recording="$3"
+	python3 - "$workflow" "$BATS_TEST_TMPDIR/workflow-$parent" "$parent" "$recording" <<'PY' || return 1
 import json
 import os
 from pathlib import Path
@@ -708,6 +710,9 @@ import sys
 import yaml
 
 workflow_path, box = map(Path, sys.argv[1:3])
+recording = sys.argv[4]
+if recording not in {"always", "success-only"}:
+    raise ValueError(f"unknown recording mode: {recording}")
 workflow = yaml.safe_load(workflow_path.read_text())
 # PyYAML's YAML 1.1 loader reads the unquoted GitHub Actions `on` as True.
 triggers = workflow.get("on", workflow.get(True))
@@ -737,8 +742,7 @@ for step in job["steps"]:
         else:
             # A recording verifier stands in for the complete battery. Execute
             # the actual workflow body, including its environment and directory.
-            (target / "verify.sh").write_text('''#!/usr/bin/env bash
-python3 - <<'RECORD'
+            observe = '''python3 - <<'RECORD'
 import json, os
 from pathlib import Path
 Path(os.environ["RECORD"]).write_text(json.dumps({
@@ -747,8 +751,11 @@ Path(os.environ["RECORD"]).write_text(json.dumps({
     "cwd": os.getcwd(),
 }))
 RECORD
-exit "${VERIFY_RC}"
-''')
+'''
+            if recording == "success-only":
+                observe = f'if [[ "${{VERIFY_RC}}" == 0 ]]; then\n{observe}fi\n'
+            (target / "verify.sh").write_text(
+                f'#!/usr/bin/env bash\n{observe}exit "${{VERIFY_RC}}"\n')
     elif "run" in step:
         # Provisioning is not executed: only the verifier run body is under test.
         if "verify.sh" in step["run"]:
@@ -781,6 +788,7 @@ for code in (0, 23):
     result = subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail",
                              "-c", step["run"]], cwd=cwd, env=env, check=False)
     assert result.returncode == code, (code, result.returncode)
+    assert record_path.exists(), f"no fresh observation for exit {code}"
     record = json.loads(record_path.read_text())
     assert record["required"] is not None, "missing workflow input: CROSS_REPO_STORAGE_REQUIRED"
     assert record["required"] == "1", record
@@ -789,22 +797,23 @@ for code in (0, 23):
     assert sibling == expected.resolve(strict=True), record
     assert sibling.is_dir(), record
     assert Path(record["cwd"]) == cwd.resolve(strict=True), record
+    print(f"valid observation for exit {code}", flush=True)
 print("required workflow body: path, required mode and exit 23 preserved")
 PY
 }
 
 @test "required storage CI executes both checkouts and propagates verifier failure" {
-	run _storage_workflow_case "$REPO/.github/workflows/ci.yml" absent
+	run _storage_workflow_case "$REPO/.github/workflows/ci.yml" absent always
 	[ "$status" -eq 0 ]
 }
 
 @test "required storage CI supplies both inputs with matching parent values" {
-	run _storage_workflow_case "$REPO/.github/workflows/ci.yml" matching
+	run _storage_workflow_case "$REPO/.github/workflows/ci.yml" matching always
 	[ "$status" -eq 0 ]
 }
 
 @test "required storage CI supplies both inputs with conflicting parent values" {
-	run _storage_workflow_case "$REPO/.github/workflows/ci.yml" conflicting
+	run _storage_workflow_case "$REPO/.github/workflows/ci.yml" conflicting always
 	[ "$status" -eq 0 ]
 }
 
@@ -829,7 +838,7 @@ for env in environments:
     env.pop(setting, None)
 target.write_text(yaml.safe_dump(workflow))
 PY
-	run _storage_workflow_case "$workflow" "$parent"
+	run _storage_workflow_case "$workflow" "$parent" always
 	[ "$status" -eq 1 ]
 	[ "${lines[-1]}" = "AssertionError: missing workflow input: $setting" ]
 }
@@ -848,6 +857,34 @@ PY
 
 @test "required storage CI refuses a missing sibling path with matching parent inputs" {
 	_storage_workflow_refuses_input HYPERLAB_ANSIBLE_REPO matching
+}
+
+# The successful invocation leaves a valid observation; the failing one then
+# records nothing. Only the cleanup before each invocation keeps the first
+# observation from standing in for the second, so the refusal must name the
+# missing fresh observation and the record must be gone.
+_storage_workflow_refuses_stale_record() {
+	local parent="$1" line
+	run _storage_workflow_case "$REPO/.github/workflows/ci.yml" "$parent" success-only
+	[ "$status" -eq 1 ]
+	[ "${lines[0]}" = "valid observation for exit 0" ]
+	for line in "${lines[@]}"; do
+		[ "$line" != "valid observation for exit 23" ]
+	done
+	[ "${lines[-1]}" = "AssertionError: no fresh observation for exit 23" ]
+	[ ! -e "$BATS_TEST_TMPDIR/workflow-$parent/record" ]
+}
+
+@test "required storage CI refuses a stale observation with absent parent inputs" {
+	_storage_workflow_refuses_stale_record absent
+}
+
+@test "required storage CI refuses a stale observation with matching parent inputs" {
+	_storage_workflow_refuses_stale_record matching
+}
+
+@test "required storage CI refuses a stale observation with conflicting parent inputs" {
+	_storage_workflow_refuses_stale_record conflicting
 }
 
 # Only this test interface selects a sibling; there is no implicit lookup or

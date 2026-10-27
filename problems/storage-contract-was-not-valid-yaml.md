@@ -160,7 +160,8 @@ directory or missing observation does not qualify. Before adding the two
 scrubs, both matching-parent deletion tests were red because the weakened
 workflows incorrectly succeeded; the absent-parent cases already detected them.
 
-Run the seven workflow cases with either caller environment:
+Run the workflow cases (seven at the time, ten with the stale-observation
+regression below) with either caller environment:
 
 ```bash
 env -u HYPERLAB_ANSIBLE_REPO -u CROSS_REPO_STORAGE_REQUIRED \
@@ -204,6 +205,65 @@ LUKS2 header check. Required mode compared both topologies with the actual guard
 and manifest. Sibling metadata, including existing bytecode caches, was unchanged.
 This is software-verified fixture isolation; hosted CI and the frozen Nitro and
 Predator installation/storage gates still need their own evidence.
+
+### A stale observation was caught only by a manual mutation
+
+The fixture removes `record_path` before each invocation, but its normal
+recording verifier writes a new observation every time. Deleting that cleanup
+therefore left every discovered test green: the exit-23 invocation overwrote the
+exit-0 observation before it was read. Only the manual "record only exit 0"
+mutation above showed the cleanup mattered, and it ended in a generic
+`FileNotFoundError`.
+
+`_storage_workflow_case` now takes a third argument. `always` is the normal
+recording verifier. `success-only` is a fault written into the verifier the
+helper generates (not an inherited variable): it records nothing when
+`VERIFY_RC` is not 0 and still exits with `VERIFY_RC`. Both run the same parsed
+workflow body, environment scrub, job and step precedence, working directory,
+exit check and record validation. After the exit check, a missing record is
+refused as `no fresh observation for exit N`. Each validated record prints
+`valid observation for exit N`. The JSON is unchanged, so no other check can
+detect staleness by accident.
+
+Three discovered tests, one for each existing parent scenario (absent, matching
+and conflicting), run the real workflow with `success-only`:
+
+- `required storage CI refuses a stale observation with absent parent inputs`
+- `required storage CI refuses a stale observation with matching parent inputs`
+- `required storage CI refuses a stale observation with conflicting parent inputs`
+
+Each test requires status 1, a first line of `valid observation for exit 0`,
+and no `valid observation for exit 23` line. The last line must be
+`AssertionError: no fresh observation for exit 23`, and the record file must be
+absent afterwards. A parse, setup, path or wrong-exit error does not satisfy the
+test. The workflow still supplies both inputs; the caller cannot supply them.
+Before the explicit freshness assertion existed, all three tests were red with
+`FileNotFoundError`.
+
+The mutations below were observed in a temporary tree copy, with each caller
+mode (both variables unset, then
+`HYPERLAB_ANSIBLE_REPO=/path/to/hyperlab-ansible CROSS_REPO_STORAGE_REQUIRED=1`).
+Every case ran:
+
+```bash
+bats --print-output-on-failure --filter 'required storage CI' tests/bootstrap-contract.bats
+```
+
+The saved copy was restored and all ten cases were green again.
+
+| Mutation | Observed result |
+| --- | --- |
+| Remove `record_path.unlink(missing_ok=True)` from the test copy | The three stale-observation tests were red at `[ "$status" -eq 1 ]`, exit 0, because their output contained `valid observation for exit 23`: the exit-0 record was reused. The seven controls and deletion cases stayed green |
+| Make `success-only` record on every exit in the test copy | The three stale-observation tests were red with status 0, because they never reached the refusal. The other seven stayed green |
+| Append `\|\| exit 0` to the storage job's verifier body in a workflow copy | The three clean controls were red with `AssertionError: (23, 0)`. The three stale-observation tests were also red with `AssertionError: (23, 0)`, not the freshness refusal. The four deletion cases stayed green, since they fail at exit 0 |
+
+Normal `bats tests/*.bats` discovery now finds 80 tests. Both complete verifiers
+passed. Standalone mode passed 76 tests and explicitly skipped the four
+sibling-dependent ones. Required mode passed all 80 with no skips, the actual
+guard accepted both topologies, and the manifest mapping matched. Sibling
+metadata was unchanged and no bytecode was written. This is software-verified
+fixture coverage. It is not a hosted CI run or a storage observation on any
+machine.
 
 ## A contract that could not be written still reported success
 
