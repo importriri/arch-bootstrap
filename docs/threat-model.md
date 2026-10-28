@@ -29,7 +29,9 @@ hardware observation: the clean-install and replay gates in
 - **The Secure Boot signing keys** that `sbctl` generates inside the new
   system.
 - **The disks the operator did not choose**, against accidental
-  destruction.
+  destruction, but only while none of them carries a partition labelled
+  `ARCH_ESP`, `ARCH_ROOT` or `ARCH_VM` (see
+  [Partition labels](#partition-labels-are-global)).
 - **The storage hand-off**: stage 2 must receive a description of the VM
   store that matches what was actually mounted, or no description at all.
 
@@ -75,11 +77,46 @@ the running, unlocked host.
 
 | Mechanism | Source | Checked by | Limit |
 |---|---|---|---|
-| The dry run is the default: `DRY_RUN=1` unless set; it writes nothing and runs only `sgdisk --pretend`, `cryptsetup --help` and `cryptsetup isLuks`, besides read-only probes | `installer`: `DRY_RUN`, every step's dry-run branch | `tests/unit.bats`: "a full dry run reaches no tool but sgdisk --pretend and cryptsetup's probes"; `tests/bootstrap-contract.bats`: "a dry run of the whole entrypoint changes nothing, at its exit either" | Bash reads `DRY_RUN` as arithmetic: `0` is a real run, but so is any value that is not a non-zero number, such as `yes`, `true` or `no`. Use exactly `DRY_RUN=0` for a real run and leave it unset (or `1`) otherwise. |
+| The dry run is the default: `DRY_RUN=1` unless set; it writes nothing and runs only `sgdisk --pretend`, `cryptsetup --help` and `cryptsetup isLuks`, besides read-only probes | `installer`: `DRY_RUN`, every step's dry-run branch | `tests/unit.bats`: "a full dry run reaches no tool but sgdisk --pretend and cryptsetup's probes"; `tests/bootstrap-contract.bats`: "a dry run of the whole entrypoint changes nothing, at its exit either" | Bash evaluates `DRY_RUN` as an arithmetic expression. Anything that evaluates to `0` is a real run: `0`, but also `00` or `1-1`. A word such as `yes`, `true` or `no` is read as the name of a variable: under the installer's `set -u`, when that variable is unset, the run stops with `unbound variable` at partitioning, after the disk prompts and before any write; when it is set, its value decides. Use exactly `DRY_RUN=0` for a real run and leave it unset (or `1`) otherwise. |
 | Every selected disk is confirmed by typing its full path back | `confirm_wipe` | `tests/unit.bats`: "confirm_wipe accepts the exact path", "confirm_wipe rejects a wrong path" | A correctly retyped wrong disk is destroyed. There is no undo and no backup step: the operator verifies an external backup first. |
 | The disk holding the live medium is refused | `confirm_wipe` (`/run/archiso/bootmnt`) | Source only | Works only when the medium is mounted at that Archiso path. |
 | The primary disk is removed from the optional VM-disk menu | `check_disk` (second argument), `main` | Source only; gate 4 asks the operator to observe it | — |
+| Partitions are addressed by GPT partition label, never by a `sda1`-style name | `ESP_PART`, `ROOT_PART`, `VM_PART`; `partition_disk`, `encrypt_vm_disk` | Source; `tests/vm-pipeline-test` on fresh loop devices | The label path is global, not tied to the confirmed disk: see [Partition labels](#partition-labels-are-global). |
 | A run refuses to start while `/mnt`, `cryptroot` or `cryptvm` is in use, or when the mounts cannot be listed | `refuse_busy_target` | `tests/bootstrap-contract.bats`: "a run refuses to start over a mounted /mnt, and the dry run says so", "a run refuses to start over an open cryptroot or cryptvm", "a run refuses to start when the mounts cannot be listed" | It looks only at `/mnt` and those two mapper names. |
+
+### Partition labels are global
+
+After it partitions a confirmed disk, the installer reaches the new
+partitions through `/dev/disk/by-partlabel/ARCH_ESP`, `ARCH_ROOT` and
+`ARCH_VM`. Those links are named after a label, not after the disk. The
+installer checks only that a link exists (`partition_disk`,
+`encrypt_vm_disk`), not that it points to a partition of the disk just
+confirmed, and then runs `wipefs`, `mkfs.fat`, `cryptsetup luksFormat` and
+`mount` on it. When several devices claim the same link, udev gives it to
+the one with the highest `link_priority`, and when no priority is set,
+which one owns it is undefined
+([`udev(7)`](https://www.freedesktop.org/software/systemd/man/latest/udev.html), `SYMLINK`).
+No test covers a second disk carrying the same label.
+
+So a disk that was never confirmed can be destroyed when it already carries
+one of the three labels: an external disk from an earlier installation,
+or, in a two-disk run, the disk about to be dedicated to VM storage, which
+is cleared only after the root partitions have been formatted. The dry run
+does not look for this.
+
+Before a real run, list the labels of every attached disk:
+
+```bash
+# Show every disk and partition with its GPT partition label.
+lsblk -o NAME,TYPE,SIZE,PARTLABEL
+```
+
+Stop if `ARCH_ESP` or `ARCH_ROOT` appears on any disk other than the one
+you will confirm as the target, or `ARCH_VM` on any disk other than the
+target and the one you will dedicate to VM storage. Disconnecting every
+disk you are not installing to is the simplest way to rule this out. Old
+labels on the target disk itself are not a problem: it is cleared before
+the links are read.
 
 ### Encryption at rest
 
@@ -169,6 +206,7 @@ mount and boot observations of gates 3 and 4 in
 |---|---|---|
 | Compromised live medium or root session | Not defended: it sees the passphrase and can write anything. | [What is trusted](#what-is-trusted) |
 | Wrong disk confirmed | It is destroyed; the guard only proves the typed path matches. | [Accident guards](#accident-guards) |
+| Another attached disk already carries `ARCH_ROOT`, `ARCH_ESP` or `ARCH_VM` | Not detected: the label path may resolve to that disk, which is then wiped, encrypted or formatted although the right disk was confirmed. The operator checks the labels and stops. | [Partition labels](#partition-labels-are-global) |
 | Partial contract write | `bootstrap` stops non-zero, cleans up its own mounts and mappers, prints no final `[OK]`; a partial file may remain and the installation counts as failed. | [Storage hand-off](#storage-hand-off) |
 | Modified initramfs on the ESP | Not detected, even with keys enrolled. | [Secure Boot](#secure-boot-what-is-signed-what-is-not) |
 | Keys never enrolled | The firmware checks none of the signatures the installer made. | [Secure Boot](#secure-boot-what-is-signed-what-is-not) |
@@ -180,6 +218,8 @@ mount and boot observations of gates 3 and 4 in
   checking that the form opens;
 - verifying the live medium, the reviewed commit and an external backup
   before a real run;
+- checking that no other attached disk carries an `ARCH_ESP`, `ARCH_ROOT`
+  or `ARCH_VM` label before a real run;
 - Secure Boot enrollment and firmware settings on each machine;
 - the clean-install and replay gates on Nitro and Predator;
 - the open licence questions in
