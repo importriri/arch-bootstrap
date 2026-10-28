@@ -260,6 +260,17 @@ reconciles the hypervisor host and manages guest and service lifecycle →
 [`arch-hypervisor-lab`](https://github.com/importriri/arch-hypervisor-lab)
 records architecture and sanitized hardware evidence.
 
+## Security and contributing
+
+- [`SECURITY.md`](SECURITY.md): how to report a vulnerability privately,
+  and what never to send.
+- [`docs/threat-model.md`](docs/threat-model.md): what the installer
+  protects, what it trusts and what it does not do; Secure Boot enrollment
+  is manual and the initramfs is not signed.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md): set-up, verification, the
+  throwaway-VM rule for the destructive gates, and source and rights
+  information.
+
 ## Author
 
 [importriri](https://github.com/importriri) is the author and maintainer.
